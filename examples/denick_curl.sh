@@ -3,7 +3,8 @@
 #
 # 用法:
 #   export BSK_KEY="bsk_你的key"
-#   ./denick_curl.sh theoshadow
+#   ./denick_curl.sh theoshadow      # 昵称
+#   ./denick_curl.sh bsk10ww         # 真名 / 旧名 也能查
 #   ./denick_curl.sh --uuid 694cd52b-8197-45f0-b28d-ad73eb299699
 #
 # 文档: https://github.com/bedkillerspacex-boop/bsk-denick-api

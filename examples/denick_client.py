@@ -4,7 +4,8 @@ BSK denick 查询 API —— Python 客户端示例（只用标准库，无第�
 
 用法:
     export BSK_KEY="bsk_你的key"
-    python3 denick_client.py theoshadow
+    python3 denick_client.py theoshadow       # 昵称
+    python3 denick_client.py bsk10ww          # 真名(或改名前的旧名)也能查
     python3 denick_client.py --uuid 694cd52b-8197-45f0-b28d-ad73eb299699
     python3 denick_client.py --batch nick1 nick2 nick3
     python3 denick_client.py --json theoshadow        # 打印原始 JSON

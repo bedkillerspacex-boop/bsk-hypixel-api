@@ -63,12 +63,23 @@ bsk_00000000000000000000000000000000
 
 ## 接口
 
-### ① 用昵称查（主要用法）
+### ① 查一个"名字"（主要用法）
+
+`nick=` 参数**不限于昵称** —— 下面三种都能查，返回体里的 `matched_by` 会告诉你命中的是哪种：
+
+| 传什么 | 例子 | `matched_by` | 说明 |
+|---|---|---|---|
+| **昵称**（nick） | `?nick=theoshadow` | `nick` | 精确命中某条记录 |
+| **真名 / 旧名**（IGN） | `?nick=bsk10ww`、`?nick=Youwy` | `ign` | 命中该玩家的任意一个用过的正版 ID（**含改名前的旧名字**）|
+| **UUID** | `?nick=694cd52b8197...` | `uuid` | 32 位十六进制 |
 
 ```http
-GET /api/denick?nick=<昵称>
+GET /api/denick?nick=<昵称 或 真名 或 UUID>
 Authorization: Bearer <Key>
 ```
+
+> 拿游戏里看到的**真名**反查"他有哪些昵称"是最常用的方向 —— 直接 `?nick=<真名>` 就行。
+> 按真名/UUID 查时，`nick` 返回的是该玩家**最新**的那个昵称，`nicks` 是全部。
 
 ### ② 用 UUID 反查
 
@@ -118,14 +129,15 @@ Authorization: Bearer <Key>
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `nick` | string | 昵称（原样，大小写按记录里的） |
+| `nick` | string | 昵称（原样，大小写按记录里的）。按真名/UUID 查时返回该玩家**最新**的昵称 |
+| `matched_by` | string | 本次是靠什么命中的：`nick` / `ign`（真名或旧名）/ `uuid` |
 | `ign` | string | 真实正版 ID |
 | `uuid` | string \| null | 真实玩家 UUID，**无横线小写**；记录里没有时是 `null` |
 | `seen_at` | string | 这条记录**最后一次**出现的时间（本地时区 `YYYY-MM-DD HH:MM`）。**不是同步时间** |
 | `seen_ts` | number | 同上，Unix 时间戳（秒）。判断"这 nick 多久没出现了"用它 |
 | `first_seen` | string \| null | 这条记录**第一次**出现的时间 |
 | `first_ts` | number \| null | 同上，Unix 时间戳（秒） |
-| `names` | string[] | **同一个 UUID 用过的所有正版 ID**（改过名就会 >1 个） |
+| `names` | string[] | **同一个 UUID 用过的所有正版 ID**（含改名前的旧名字；改过名就 >1 个）|
 | `nicks` | string[] | 同一个 UUID 用过的所有昵称（按时间倒序，最新的在前） |
 | `nick_count` | number | `nicks` 的条数 |
 
