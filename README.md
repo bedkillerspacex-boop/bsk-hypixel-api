@@ -105,8 +105,10 @@ Authorization: Bearer <Key>
     "nick": "theoshadow",
     "ign": "bsk10ww",
     "uuid": "694cd52b819745f0b28dad73eb299699",
-    "seen_at": "2026-08-20 21:52",
-    "seen_ts": 1787233926,
+    "seen_at": "2026-08-28 10:56",
+    "seen_ts": 1787885782,
+    "first_seen": "2026-08-20 21:52",
+    "first_ts": 1787233926,
     "names": ["bsk10ww"],
     "nicks": ["theoshadow", "..."],
     "nick_count": 1
@@ -119,8 +121,10 @@ Authorization: Bearer <Key>
 | `nick` | string | 昵称（原样，大小写按记录里的） |
 | `ign` | string | 真实正版 ID |
 | `uuid` | string \| null | 真实玩家 UUID，**无横线小写**；记录里没有时是 `null` |
-| `seen_at` | string | 这条记录出现的时间（服务器本地时区，`YYYY-MM-DD HH:MM`） |
-| `seen_ts` | number | 同上，Unix 时间戳（秒） |
+| `seen_at` | string | 这条记录**最后一次**出现的时间（本地时区 `YYYY-MM-DD HH:MM`）。**不是同步时间** |
+| `seen_ts` | number | 同上，Unix 时间戳（秒）。判断"这 nick 多久没出现了"用它 |
+| `first_seen` | string \| null | 这条记录**第一次**出现的时间 |
+| `first_ts` | number \| null | 同上，Unix 时间戳（秒） |
 | `names` | string[] | **同一个 UUID 用过的所有正版 ID**（改过名就会 >1 个） |
 | `nicks` | string[] | 同一个 UUID 用过的所有昵称（按时间倒序，最新的在前） |
 | `nick_count` | number | `nicks` 的条数 |

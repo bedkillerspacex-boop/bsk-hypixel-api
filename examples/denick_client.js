@@ -22,7 +22,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  *
  * 成功返回（完整字段见文档）:
  *   {
- *     nick, ign, uuid, seen_at, seen_ts,
+ *     nick, ign, uuid, seen_at, seen_ts, first_seen, first_ts,
  *     names,        // 同一个 UUID 用过的**所有**正版 ID（改过名就 >1 个）
  *     nicks,        // 同一个 UUID 用过的**所有**昵称（新的在前）
  *     nick_count
