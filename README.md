@@ -290,6 +290,83 @@ await (await fetch("https://api.firebounce.today/api/denick?nick=theoshadow", {
 
 ---
 
+## 玩家资料聚合 `/api/player`
+
+**一次调用拿全**一个人的资料（会访问 Hypixel / Urchin / Mojang / NameMC，带磁盘缓存）。
+
+```http
+GET /api/player?name=<名字 或 UUID 或 昵称>
+Authorization: Bearer <Key>
+```
+
+`name=` 的解析顺序：**UUID → Mojang 正版 ID → denick 索引里的昵称**。
+
+> ⚠️ **同名撞车**：如果一个字符串**既是正版账号又是别人的昵称**（实测 `theoshadow`
+> 本身是个正版账号，同时又是 `bsk10ww` 的昵称），这个接口按 **Mojang 真账号**返回。
+> 想要昵称映射请用 [`/api/denick`](#接口)。
+
+### 返回
+
+```json
+{
+  "ok": true,
+  "data": {
+    "query": "bsk10ww",
+    "uuid": "694cd52b-8197-45f0-b28d-ad73eb299699",
+    "name": "bsk10ww",
+    "name_source": "mojang",
+    "rank": "§6[MVP§c++§6]",
+    "network_level": 206.62,
+    "online": true, "game": "决斗", "mode": null,
+    "guild": {"name": "...", "tag": "..."},
+    "country": "中国",
+    "ping_ms": 201, "ping_region": "亚洲(推测)",
+    "names": ["bsk10ww"],
+    "bedwars": {
+      "level": 503, "wins": 2981, "losses": 2278, "games": 5259,
+      "fkdr": 3.54, "wlr": 1.309, "bblr": 1.66,
+      "final_kills": 8532, "final_deaths": 2410,
+      "beds_broken": 4637, "beds_lost": 2797,
+      "clutch_rate": 16.3, "winstreak": null
+    },
+    "suspicion": {"score": 49, "legit": 51, "tag_adjust": 10.0, "parts": [...]},
+    "tags": [{"tag_type": "blatant_cheater", "reason": "legitscaff, fastmine", ...}],
+    "nicks": ["theoshadow", "oldowl"], "nick_count": 2,
+    "denick": {"first_seen": "2026-03-12 01:27", "first_ts": 1773250078,
+               "last_seen": "2026-08-28 10:56", "last_ts": 1787885782, "records": 2},
+    "sources": {"hypixel": "ok", "status": "ok", "guild": "ok", "tags": "ok",
+                "ping": "ok", "country": "ok", "names": "ok"}
+  }
+}
+```
+
+几个要点：
+
+- **`sources`**：每一项的成功/失败原因。**任何一项挂了都不会让整个请求失败** ——
+  对应字段给 `null`，`sources` 里写明原因
+- **`suspicion.score`**：我们自己的可疑度评分（0~100，越高越可疑），
+  `parts` 是每个指标的权重拆解
+- **`tags`**：Urchin 的反作弊标签（原始结构，含 `tag_type` / `reason`）
+- **`rank`**：带 `§` 颜色代码的原始字符串，客户端自行处理
+- **`bedwars.level`** 是 BedWars 等级，`network_level` 是服务器总等级，别搞混
+
+### 频率限制
+
+- 每把 Key **120 次/分钟**（跟 `/api/denick` 共用）
+- **额外**还有一道**全局限流**：该接口每分钟最多 **90 次**
+  （因为它会真的访问 Hypixel/Urchin，得保护上游配额）→ 超了返回 `429`
+- 命中磁盘缓存时很快（毫秒级）；冷查询约 **1~3 秒**
+
+### 错误码
+
+跟 `/api/denick` 相同，另外多了：
+
+| HTTP | `error` | 意思 |
+|---|---|---|
+| 502 | `upstream_failed` | 上游（Hypixel 等）整体失败，稍后重试 |
+
+---
+
 ## 注意事项（重要）
 
 1. **同名 ≠ 同一人。** 实测 `theoshadow` 本身就存在一个正版账号（`THEOshadow`），
