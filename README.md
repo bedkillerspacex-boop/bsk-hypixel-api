@@ -4,7 +4,14 @@
 
 ```
 Base URL:  https://api.firebounce.today
-Endpoint:  GET / POST  /api/denick
+Endpoint:  GET / POST  /api/denick          昵称 -> 真名/UUID
+           GET / POST  /api/player          身份 + 战绩 + 可疑度 + 标签
+           GET / POST  /api/player/card     整张卡片的内容(JSON, 网页靠它渲染)
+           GET         /api/card.png        整张卡片(PNG)
+           GET         /api/tags            只要反作弊标签(最轻量)
+           GET         /api/search          昵称/真名模糊搜索(本地)
+           GET         /api/recent          最近记录到的昵称(轮询)
+           GET         /api/nick-history    某个昵称的完整出现历史
 ```
 
 > ⚠️ **数据来自社区记录**（Discord 服务器 `swag` 里 `Hypixel Tracker` bot 发的内容），
@@ -21,6 +28,9 @@ Endpoint:  GET / POST  /api/denick
 - [错误码](#错误码)
 - [频率限制](#频率限制)
 - [示例代码](#示例代码)
+- [玩家资料聚合 `/api/player`](#玩家资料聚合-apiplayer)
+- [卡片内容 `/api/player/card`](#卡片内容-apiplayercard)
+- [其它接口](#其它接口)
 - [注意事项](#注意事项重要)
 
 ---
@@ -367,6 +377,134 @@ Authorization: Bearer <Key>
 
 ---
 
+## 卡片内容 `/api/player/card`
+
+**整张卡片的全部内容**（就是 QQ 机器人 `/hyp` 发出来的那张图上的所有东西）以 JSON 返回。
+
+和 `/api/card.png`（直接拿 PNG，见下文）的区别：**只取数据、不渲染图片**，
+所以快得多 —— 省掉了最贵的那步画图。网页版 `hyp.firebounce.today` 就是靠这个接口
+把卡片完整画出来的（"把图片搬到网页上"）。
+
+```http
+GET /api/player/card?name=<名字 或 UUID 或 昵称>
+Authorization: Bearer <Key>
+```
+
+`name=` 的解析顺序和 `/api/player` 一样：**UUID → Mojang 正版 ID → denick 索引里的昵称**。
+
+### 返回
+
+```json
+{
+  "ok": true,
+  "data": {
+    "name": "Satanify",
+    "uuid": "543a48ad-0091-4d54-8c63-d08fffb783c0",
+    "model": "slim",
+    "skin_px": "64×64",
+    "stamp": "2026-09-22 20:50:22 +08:00",
+    "generated_at": 1790081422,
+    "cached": false,
+    "cache_age": 0,
+    "footer": "BSK 玩家档案 · Hypixel / Urchin / NameMC / Mojang",
+    "status": {"online": true,
+               "text": "在线 · 正在玩 密室杀手 · MURDER_DOUBLE_UP",
+               "note": "Hypixel 实时状态"},
+    "rename": {"ok": true, "text": "可以 (距上次改名 40 天)"},
+    "suspicion": 14,
+    "legit": 86,
+    "tags": [{"label": "Confirmed Cheater", "color": "#cc3333",
+              "note": "reason · by someone · 2026-08-01"}],
+    "left":  [ "…块…" ],
+    "right": [ "…块…" ]
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `name` / `uuid` | string | 玩家名 / 带横线 UUID |
+| `model` | string | `slim`（Alex 细手臂）或 `classic`（Steve） |
+| `skin_px` | string \| null | 皮肤贴图分辨率，如 `64×64` |
+| `stamp` | string | 卡片右上角那个时间戳（**取数时刻**，不是同步时间） |
+| `generated_at` | number | 同上，Unix 秒 |
+| `cached` | bool | 是否命中下面的 90 秒缓存 |
+| `cache_age` | number | 这份数据是几秒前取的（`0` = 刚拉的） |
+| `status` | object \| null | 在线状态。`null` = 上游没给 |
+| `rename` | object \| null | 改名资格（`ok` 为 `null` 表示缺名称历史、无法判断） |
+| `suspicion` / `legit` | number | 可疑度 / 可信度（0~100）。只是把 `right` 里那个圆环的值提出来方便直接用 |
+| `tags` | object[] | 反作弊标签：`label` / `color`（`#rrggbb`）/ `note`（原因 · 谁加的 · 日期） |
+| `left` / `right` | object[] | **左列 / 右列的所有块** |
+
+### 块（`left` / `right` 的元素）
+
+**数组顺序 == 卡片图片上的顺序**，网页照着顺序画就是原图。每个块都有 `kind` / `title`：
+
+| `kind` | 位置 | 字段 |
+|---|---|---|
+| `skin` | 左 | `image`（data URL）、`note`（`SLIM · 64×64`）、`model`、`size`、`empty_text` |
+| `capes` | 左 | `items: [{label, image}]`、`empty_text` |
+| `score` | 右 | `suspicion`、`legit`、`color`、`caption`、`note`、`tag_adj`、`parts` |
+| `account` | 右 | `accent`、`cells`（玩家 Rank / 服务器等级 / 赠送 Rank / 地区 / 语言 / Hypixel延迟）|
+| `mode` | 右 | `key`（`bedwars` / `skywars` / `duels`）、`badge`（等级）、`accent`、`cells` |
+| `anticheat` | 右 | `text`、`color`、`icon`（`check` / `x` / `none`）、`note`、`source`、`tags` |
+| `info` | 左右 | `accent`、`cells`（2×2 格：账号信息 / 账号统计 / 近期活动 / 公会）|
+| `list` | 左右 | `rows: [{label, right}]`、`note`（右上角小字）|
+| `history` | 右 | `rows: [{name, current, ts, date}]`、`note`、`empty_text` |
+
+`score.parts` 是可疑度的逐项拆解：
+
+```json
+{"label": "FKDR", "value": "3.65", "level": 0.62, "points": 7,
+ "points_text": "+7", "color": "#cc3333"}
+```
+
+`level` 是 0~1 的进度（画进度条用），`points` 是这一项给总分贡献了几分
+（各项相加 ≈ 总分，不含标签修正）。
+
+### 格子（`cells`）
+
+两种，看 `kind`：
+
+```json
+{"label": "服务器等级", "kind": "text", "value": "322.35"}
+
+{"label": "玩家 Rank", "kind": "legacy", "value": "§6[MVP§c++§6]",
+ "plain": "[MVP++]",
+ "spans": [["[MVP", "#ffaa00"], ["++", "#ff5555"], ["]", "#ffaa00"]]}
+```
+
+- `kind: "text"` —— `value` 直接显示
+- `kind: "legacy"` —— 带 Minecraft `§` 颜色码的 Rank。**`spans` 已经切好了**（文本 + 颜色），
+  直接拿来渲染；`plain` 是去掉颜色码的纯文本；`value` 是原始串
+- 值缺失时是 `"-"` —— 跟图片上显示的一致，**不是 `null`**
+
+### 皮肤 / 披风
+
+`skin.image` 和 `capes.items[].image` 是 **base64 data URL**（`data:image/png;base64,…`），
+可以直接当 `<img src>` 用，不用再请求别的接口。皮肤是 3/4 视角的渲染图（把披风也穿上了，约 16 KB）。
+
+### 缓存与限制
+
+- 同一个玩家 **90 秒内**重复请求直接返回缓存（`cached: true`，`cache_age` 是数据年龄）
+  —— 网页切标签 / 刷新不会反复打 Hypixel
+- 每 Key **120 次/分钟** + **全局闸门 90 次/分钟**（跟 `/api/player` 共用）
+- 冷查询约 **1~3 秒**（比 `/api/card.png` 快，因为不渲染图片）
+- 错误码同 [`/api/player`](#错误码-1)
+
+### 网站内部接口 `/web/api/card`
+
+`hyp.firebounce.today` 用的是**同一份数据**：
+
+```http
+GET /web/api/card?name=<名字 或 UUID 或 昵称>
+```
+
+- **不需要 Key**（服务器侧注入），但**按 IP 限速**：**7 秒间隔 + 每分钟 6 次**（跟机器人 `/hyp` 完全一致）
+- 只在服务器内部反代（`/web/api/`），不是给第三方用的接口
+
+---
+
 ## 其它接口
 
 所有接口共用同一套 **API Key 鉴权**（`?key=` / `Authorization: Bearer` / `X-API-Key`）
@@ -465,7 +603,7 @@ GET /api/card.png?name=<名字>
 
 ### 全局闸门（重要）
 
-`/api/player`、`/api/tags`、`/api/card.png` 这三个**会真的访问外部服务**，
+`/api/player`、`/api/player/card`、`/api/tags`、`/api/card.png` 这几个**会真的访问外部服务**，
 除了每 Key 120/分钟，还有一道**全局限流**：**合计每分钟最多 90 次**（`429` 表示超了）。
 本地接口（`/api/denick`、`/api/search`、`/api/recent`、`/api/nick-history`）不受这道闸门限制。
 
@@ -488,5 +626,6 @@ GET /api/card.png?name=<名字>
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-22 | 新增 **`GET /api/player/card`** —— 整张卡片的内容（两列所有块 + 皮肤/披风 data URL + legacy Rank 的 `spans`），90 秒缓存；新增网站内部接口 `/web/api/card`（无 Key、按 IP 限速）；`api.firebounce.today` 放通整段 `/api/*`（之前只放通了 `/api/denick`，文档里写的 `/api/player`、`/api/card.png` 在线上其实是 404） |
 | 2026-09-22 | 返回体新增 `names` / `nicks` / `nick_count`（同一个 UUID 的所有名字与昵称）；文档强调 **UUID 是不变主键，正版 ID 会变** |
 | 2026-09-21 | 接口上线：`GET/POST /api/denick`，API Key 鉴权，每 Key 120 次/分钟 |
