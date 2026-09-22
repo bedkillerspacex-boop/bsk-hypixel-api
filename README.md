@@ -456,7 +456,7 @@ Authorization: Bearer <Key>
 | `kind` | 位置 | 字段 |
 |---|---|---|
 | `skin` | 左 | `image`（data URL）、`note`（`SLIM · 64×64`）、`model`、`size`、`empty_text` |
-| `capes` | 左 | `items: [{label, image}]`、`empty_text` |
+| `capes` | 左 | **当前穿戴** `worn: {label, image, source}` 、**拥有** `items: [{label, image}]`、`count`、`note`、`empty_text` |
 | `score` | 右 | `suspicion`、`legit`、`color`、`caption`、`note`、`tag_adj`、`parts` |
 | `account` | 右 | `accent`、`cells`（玩家 Rank / 服务器等级 / 赠送 Rank / 地区 / 语言 / Hypixel延迟）|
 | `mode` | 右 | `key`（`bedwars` / `skywars` / `duels`）、`badge`（等级）、`accent`、`cells` |
@@ -494,8 +494,28 @@ Authorization: Bearer <Key>
 
 ### 皮肤 / 披风
 
-`skin.image` 和 `capes.items[].image` 是 **base64 data URL**（`data:image/png;base64,…`），
+`skin.image` 和 `capes.*.image` 是 **base64 data URL**（`data:image/png;base64,…`），
 可以直接当 `<img src>` 用，不用再请求别的接口。皮肤是 3/4 视角的渲染图（把披风也穿上了，约 16 KB）。
+
+披风块**把"当前穿戴"和"拥有"分开**（这是两件事）：
+
+```json
+{"kind": "capes", "title": "披风", "note": "拥有 7 件", "count": 7,
+ "worn": {"label": "Minecraft Experience", "image": "data:image/png;base64,…",
+          "source": "Mojang 皮肤属性"},
+ "items": [{"label": "Home", "image": "data:…"}, {"label": "Menace", "image": "data:…"}],
+ "empty_text": "该账号没有披风"}
+```
+
+- **`worn`** = 当前**穿在身上**的那件。以 **Mojang 皮肤属性**为准（实时），名字用像素指纹
+  去"拥有"列表里认（Mojang 只给贴图不给名字）。`source` 会写清是从哪来的
+- **`items`** = **拥有**的其余披风（不含 `worn` 那件，避免重复画），可能为空
+- `count` = 拥有总数（含 `worn`）；`note` 就是"拥有 N 件"
+- 数据源：[NameMC](https://namemc.com) 档案页的 `Capes (N)` 区块（拥有列表 + 谁在穿），
+  贴图走 `s.namemc.com`。**laby.net 的 API 现在要 edge challenge token，爬不了**，
+  所以没用它；OptiFine 披风是另一套系统，会作为额外一项出现在 `items` 里
+- 披风贴图有 30 天磁盘缓存；冷启动时若某张缩略图没赶上建卡预算，这一次 `image` 会是 `null`，
+  但名字照给，后台线程会把缓存补上（下次就有图）
 
 ### 缓存与限制
 
@@ -645,6 +665,7 @@ GET /api/card.png?name=<名字>
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-22 | 披风拆成 **当前穿戴 `worn`**（高亮，以 Mojang 皮肤属性为准）和 **拥有 `items`**（爬 NameMC 的 `Capes (N)` 区块）；网页新增 Plancke / NameMC / laby.net 外链；首页文案改为「用过的nick」 |
 | 2026-09-22 | 新增 **`GET /api/player/card`** —— 整张卡片的内容（两列所有块 + 皮肤/披风 data URL + legacy Rank 的 `spans`），90 秒缓存；新增网站内部接口 `/web/api/card`；`api.firebounce.today` 放通整段 `/api/*`（之前只放通了 `/api/denick`，文档里写的 `/api/player`、`/api/card.png` 在线上其实是 404） |
 | 2026-09-22 | `/web/api/*` 改成**服务端注入 Key 后照样校验**（访客看不到 Key，但整站共用那把 Key 的额度）；**限速可配**：新增 `/apikey rate`，管理员能按 Key / 按 QQ 号调每分钟次数（0 = 不限速） |
 | 2026-09-22 | 返回体新增 `names` / `nicks` / `nick_count`（同一个 UUID 的所有名字与昵称）；文档强调 **UUID 是不变主键，正版 ID 会变** |
