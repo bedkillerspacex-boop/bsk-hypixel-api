@@ -367,6 +367,110 @@ Authorization: Bearer <Key>
 
 ---
 
+## 其它接口
+
+所有接口共用同一套 **API Key 鉴权**（`?key=` / `Authorization: Bearer` / `X-API-Key`）
+和每 Key **120 次/分钟**的限制。
+
+### `/api/tags` —— 只要反作弊标签（最轻量）
+
+```http
+GET /api/tags?name=<名字|UUID|昵称>
+```
+
+```json
+{"ok": true, "data": {
+  "name": "bsk10ww", "uuid": "694cd52b-...",
+  "tag_types": ["blatant_cheater"],
+  "tags": [{"tag_type": "blatant_cheater", "reason": "legitscaff, fastmine", ...}],
+  "suspicion": {"score": 49, "legit": 51, "tag_adjust": 10.0},
+  "sources": {"tags": "ok", "hypixel": "ok"}
+}}
+```
+
+只打 Urchin + Hypixel 两次，适合插件做**角标**。命中缓存约 0.2 秒。
+同样受全局闸门限制（见文末）。
+
+### `/api/search` —— 模糊搜索（本地，快）
+
+```http
+GET /api/search?q=<至少2字符>&limit=20
+```
+
+```json
+{"ok": true, "data": {"query": "clef", "count": 4, "results": [
+  {"nick": "NewLouis", "ign": "clefer", "uuid": "3ac04f4b...",
+   "seen_at": "2026-09-21 16:58", "seen_ts": 1789981083, "matched": "ign"}
+]}}
+```
+
+- 昵称和真名（含旧名）都搜，`matched` 告诉你命中在哪边
+- 排序：**前缀命中 > 子串命中**，同档按最近出现倒序
+- 纯本地，**约 10 毫秒**
+
+### `/api/recent` —— 最近记录到的昵称（监控流）
+
+```http
+GET /api/recent?limit=50&since=<上次的 max_seen_ts>
+```
+
+```json
+{"ok": true, "data": {
+  "count": 5, "since": 0, "max_seen_ts": 1790067491,
+  "records": [{"nick": "deadlykill", "ign": "Satanify", "uuid": "...",
+               "seen_at": "2026-09-22 16:58", "seen_ts": 1790067491,
+               "first_seen": "2026-09-22 16:58"}]
+}}
+```
+
+轮询用法：把上次拿到的 `max_seen_ts` 当 `since` 传回来，就只拿新的。纯本地。
+
+### `/api/nick-history` —— 某个昵称的完整历史
+
+```http
+GET /api/nick-history?nick=<昵称>&limit=200
+```
+
+```json
+{"ok": true, "data": {
+  "nick": "theoshadow", "ign": "bsk10ww", "uuid": "694cd52b...",
+  "count": 3,
+  "first_seen": "2026-08-20 21:52", "first_ts": 1787233926,
+  "last_seen": "2026-08-28 10:56",  "last_ts": 1787885782,
+  "channels": [{"channel": "1498800024794955887", "count": 2}, ...],
+  "recent": [{"ts": 1787885782, "at": "2026-08-28 10:56",
+              "channel": "1477691475578982483", "message_id": "1542729530362302547"}]
+}}
+```
+
+数据来自**本地消息归档**（拉下来的原始记录，按消息 id 去重），所以是**真实出现记录**，
+不是推断。`count` 是出现过几次，`channels` 是各频道分布。纯本地，约 0.3 秒。
+
+### `/api/card.png` —— 直接拿卡片图
+
+```http
+GET /api/card.png?name=<名字>
+```
+
+返回 `image/png`（默认约 160 KB，1140px 宽），带 `Cache-Control: max-age=300`，
+可以直接嵌网页或插件里：
+
+```html
+<img src="https://api.firebounce.today/api/card.png?name=bsk10ww&key=bsk_xxx">
+```
+
+> ⚠️ 这个接口**会真的渲染卡片**（跑 Hypixel/Urchin/Mojang 一圈），冷查询 1~3 秒，
+> 所以跟 `/api/player` 一样受**全局闸门**限制。Key 放在 URL 里会被访问日志记下，
+> 内部用建议走请求头。
+
+### 全局闸门（重要）
+
+`/api/player`、`/api/tags`、`/api/card.png` 这三个**会真的访问外部服务**，
+除了每 Key 120/分钟，还有一道**全局限流**：**合计每分钟最多 90 次**（`429` 表示超了）。
+本地接口（`/api/denick`、`/api/search`、`/api/recent`、`/api/nick-history`）不受这道闸门限制。
+
+---
+
 ## 注意事项（重要）
 
 1. **同名 ≠ 同一人。** 实测 `theoshadow` 本身就存在一个正版账号（`THEOshadow`），
