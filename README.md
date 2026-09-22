@@ -454,6 +454,7 @@ Authorization: Bearer <Key>
 | `generated_at` | number | 同上，Unix 秒 |
 | `cached` | bool | 是否命中下面的 90 秒缓存 |
 | `cache_age` | number | 这份数据是几秒前取的（`0` = 刚拉的） |
+| `stale` | bool \| 无 | 只在命中**过期缓存**时出现：`true` = 这份是旧的，后台正在刷新（见下文「缓存与限制」）|
 | `status` | object \| null | 在线状态。`null` = 上游没给 |
 | `rename` | object \| null | 改名资格（`ok` 为 `null` 表示缺名称历史、无法判断） |
 | `suspicion` / `legit` | number | 可疑度 / 可信度（0~100）。只是把 `right` 里那个圆环的值提出来方便直接用 |
@@ -471,7 +472,7 @@ Authorization: Bearer <Key>
 | `score` | 右 | `suspicion`、`legit`、`color`、`caption`、`note`、`tag_adj`、`parts` |
 | `account` | 右 | `accent`、`cells`（玩家 Rank / 服务器等级 / 赠送 Rank / 地区 / 语言 / Hypixel延迟）|
 | `mode` | 右 | `key`（`bedwars` / `skywars` / `duels`）、`badge`（等级）、`accent`、`cells` |
-| `anticheat` | 右 | `text`、`color`、`icon`（`check` / `x` / `none`）、`note`、`source`、`tags` |
+| `anticheat` | 右 | `text`（`No Record` / 具体标签 / **`查询失败`**）、`color`、`icon`（`check` / `x` / `none`）、`note`、`source`、`tags` |
 | `info` | 左右 | `accent`、`cells`（2×2 格：账号信息 / 账号统计 / 近期活动 / 公会）|
 | `list` | 左右 | `rows: [{label, right}]`、`note`（右上角小字）|
 | `history` | 右 | `rows: [{name, current, ts, date}]`、`note`、`empty_text` |
@@ -531,10 +532,14 @@ Authorization: Bearer <Key>
 
 ### 缓存与限制
 
-- 同一个玩家 **90 秒内**重复请求直接返回缓存（`cached: true`，`cache_age` 是数据年龄）
-  —— 网页切标签 / 刷新不会反复打 Hypixel
-- 每 Key **120 次/分钟** + **全局闸门 90 次/分钟**（跟 `/api/player` 共用）
-- 冷查询约 **1~3 秒**（比 `/api/card.png` 快，因为不渲染图片）
+- 同一个玩家 **90 秒内**直接回缓存（`cached: true`，`cache_age` 是数据年龄）；
+  **90 秒 ~ 30 分钟**之间回的是**旧数据 + 后台刷新**（这时会多一个 `stale: true`）——
+  也就是 stale-while-revalidate：宁可先给你 90 秒前的数据，也不让你干等一次冷查询
+- 网站那条路（`/web/api/card`）在 nginx 上还有一层 **60 秒共享缓存**：
+  命中时前端几乎瞬开（响应头 `X-Cache-Status: HIT`），根本不进 Python
+- 冷查询 **约 3~5 秒**（要等 Hypixel / Urchin / NameMC 上游）；热缓存 **<50ms**
+- 每 Key **120 次/分钟** + **全局闸门 90 次/分钟**（跟 `/api/player` 共用）；
+  命中缓存**不吃**这个额度 —— 那 120 是**真的上游取数**配额
 - 错误码同 [`/api/player`](#错误码-1)
 
 ### 网站内部接口 `/web/api/card`
@@ -677,7 +682,9 @@ GET /api/card.png?name=<名字>
 
 | 日期 | 变更 |
 |---|---|
-| 2026-09-22 | 更正**申请流程**：全程在**群里**发指令、Key 走 **QQ 邮箱**（机器人沙箱**发不出主动私聊**，之前文档写成"私聊机器人"是错的；机器人回复里那句"同意后会私聊发 Key"也一并改掉了） |
+| 2026-09-22 | **提速**：数据源超时收紧 + 失败冷却（之前 Urchin 会卡 20 秒、bordic 12 秒，每次都把建卡预算吃满 → 冷查询 12 秒）；建卡改**分级等待**（必需源等满预算、可选源只多等 1.5 秒）；缓存改 90 秒新鲜 + 30 分钟 stale-while-revalidate；nginx 加 60 秒共享缓存 + gzip（JSON 小 37%）。冷查询 **12s → 3~5s**，重复访问 **≈0ms** |
+| 2026-09-22 | **诚实性修正**：Urchin 查询失败时不再显示成绿色的 `No Record`（那等于把「没查成功」说成「没问题」），改为黄色的 `查询失败` + 说明 |
+| 2026-09-22 | 头像改为**纯水平视角**（yaw/pitch = 0：正面方脸 + 帽子层凸出）|：全程在**群里**发指令、Key 走 **QQ 邮箱**（机器人沙箱**发不出主动私聊**，之前文档写成"私聊机器人"是错的；机器人回复里那句"同意后会私聊发 Key"也一并改掉了） |
 | 2026-09-22 | 新增顶层字段 **`avatar`**（头 + 帽子层，我们自己渲染的正交投影，近正面小角度）；网页也改用它（旧的 mc-heads 头像会把帽子层丢掉） |
 | 2026-09-22 | 披风拆成 **当前穿戴 `worn`**（高亮，以 Minecraft 官方皮肤属性为准）和 **拥有 `items`**（爬 NameMC 的 `Capes (N)` 区块）；网页新增 Plancke / NameMC / laby.net 外链；首页文案改为「用过的nick」 |
 | 2026-09-22 | 新增 **`GET /api/player/card`** —— 整张卡片的内容（两列所有块 + 皮肤/披风 data URL + legacy Rank 的 `spans`），90 秒缓存；新增网站内部接口 `/web/api/card`；`api.firebounce.today` 放通整段 `/api/*`（之前只放通了 `/api/denick`，文档里写的 `/api/player`、`/api/card.png` 在线上其实是 404） |
