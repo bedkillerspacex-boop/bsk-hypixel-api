@@ -650,16 +650,20 @@ GET /api/nick-history?nick=<昵称>&limit=200
 GET /api/card.png?name=<名字>
 ```
 
-返回 `image/png`（默认约 160 KB，1140px 宽），带 `Cache-Control: max-age=300`，
-可以直接嵌网页或插件里：
+返回 `image/png`（1140px 宽，**约 150~350 KB**，看皮肤/披风复杂度和图片本身），
+带 `Cache-Control: max-age=300`，可以直接嵌网页或插件里：
 
 ```html
 <img src="https://api.firebounce.today/api/card.png?name=bsk10ww&key=bsk_xxx">
 ```
 
-> ⚠️ 这个接口**会真的渲染卡片**（跑 Hypixel/Urchin/Mojang 一圈），冷查询 1~3 秒，
+> ⚠️ 这个接口**会真的渲染卡片**（跑 Hypixel/Urchin/Mojang 一圈），冷查询 **2~5 秒**，
 > 所以跟 `/api/player` 一样受**全局闸门**限制。Key 放在 URL 里会被访问日志记下，
 > 内部用建议走请求头。
+
+**缓存**：跟 `/api/player/card` 同一套 —— 同一个玩家 **90 秒内直接复用**（重复调用
+**≈10ms**，就是读一次缓存），90 秒 ~ 30 分钟**先回旧的 + 后台重新出图**。
+数据新旧看响应头 `X-Card-Age`（秒；`0` 表示这次是现出的）。
 
 ### 全局闸门（重要）
 
@@ -686,6 +690,7 @@ GET /api/card.png?name=<名字>
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-22 | **出图也加缓存**：`/hyp` 与 `/api/card.png` 现在共用一套 90 秒缓存 + 30 分钟 stale-while-revalidate —— 同一个玩家连着查从 ~3 秒变成 **~10ms**；新增响应头 `X-Card-Age` 如实报告数据多旧 |
 | 2026-09-22 | 新增 **`/apikey help`**（不带参数也出这份）：一步步写清申请流程 + 常见问题，管理员会多看到一段限速配置用法；`/help` 底部也加了指引 |
 | 2026-09-22 | **提速**：数据源超时收紧 + 失败冷却（之前 Urchin 会卡 20 秒、bordic 12 秒，每次都把建卡预算吃满 → 冷查询 12 秒）；建卡改**分级等待**（必需源等满预算、可选源只多等 1.5 秒）；缓存改 90 秒新鲜 + 30 分钟 stale-while-revalidate；nginx 加 60 秒共享缓存 + gzip（JSON 小 37%）。冷查询 **12s → 3~5s**，重复访问 **≈0ms** |
 | 2026-09-22 | **诚实性修正**：Urchin 查询失败时不再显示成绿色的 `No Record`（那等于把「没查成功」说成「没问题」），改为黄色的 `查询失败` + 说明 |
