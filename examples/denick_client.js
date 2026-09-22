@@ -9,7 +9,7 @@
  *   node denick_client.js --json theoshadow      # 打印原始 JSON
  *
  * 文档: https://github.com/bedkillerspacex-boop/bsk-denick-api
- * 申请 Key: 在 QQ 里私聊 BSK 机器人发  /apikey 你的QQ号
+ * 申请 Key: 在 QQ 群里发  /apikey 你的QQ号  (机器人发不出私聊, Key 走你的 QQ 邮箱)
  */
 
 const API = "https://api.firebounce.today/api/denick";

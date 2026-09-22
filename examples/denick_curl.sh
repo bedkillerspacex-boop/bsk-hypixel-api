@@ -8,7 +8,7 @@
 #   ./denick_curl.sh --uuid 694cd52b-8197-45f0-b28d-ad73eb299699
 #
 # 文档: https://github.com/bedkillerspacex-boop/bsk-denick-api
-# 申请 Key: 在 QQ 里私聊 BSK 机器人发  /apikey 你的QQ号
+# 申请 Key: 在 QQ 群里发  /apikey 你的QQ号  (机器人发不出私聊, Key 走你的 QQ 邮箱)
 
 set -euo pipefail
 

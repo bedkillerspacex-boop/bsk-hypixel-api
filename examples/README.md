@@ -14,7 +14,7 @@
 export BSK_KEY="bsk_你的key"
 ```
 
-申请 Key：在 QQ 里私聊 BSK 机器人发 `/apikey 你的QQ号`
+申请 Key：在 QQ **群里**发 `/apikey 你的QQ号`（机器人发不出私聊，Key 发到你的 QQ 邮箱）
 （会发验证邮件到你的 QQ 邮箱，经管理员同意后 Key 也发到邮箱）
 
 ## 快速试
