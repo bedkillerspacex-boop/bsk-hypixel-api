@@ -131,13 +131,14 @@ Authorization: Bearer <Key>
 |---|---|---|
 | `nick` | string | 昵称（原样，大小写按记录里的）。按真名/UUID 查时返回该玩家**最新**的昵称 |
 | `matched_by` | string | 本次是靠什么命中的：`nick` / `ign`（真名或旧名）/ `uuid` |
+| `current_name` | string \| null | **当前名** = 最近一次被记录到的正版 ID。按旧名查时 `ign` 回显的是你查的那个旧名，想要"他现在叫什么"就看这个 |
 | `ign` | string | 真实正版 ID |
 | `uuid` | string \| null | 真实玩家 UUID，**无横线小写**；记录里没有时是 `null` |
 | `seen_at` | string | 这条记录**最后一次**出现的时间（本地时区 `YYYY-MM-DD HH:MM`）。**不是同步时间** |
 | `seen_ts` | number | 同上，Unix 时间戳（秒）。判断"这 nick 多久没出现了"用它 |
 | `first_seen` | string \| null | 这条记录**第一次**出现的时间 |
 | `first_ts` | number \| null | 同上，Unix 时间戳（秒） |
-| `names` | string[] | **同一个 UUID 用过的所有正版 ID**（含改名前的旧名字；改过名就 >1 个）|
+| `names` | string[] | **同一个 UUID 用过的所有正版 ID**（含旧名），**按最近被记录到的时间倒序**（`names[0]` 就是 `current_name`）|
 | `nicks` | string[] | 同一个 UUID 用过的所有昵称（按时间倒序，最新的在前） |
 | `nick_count` | number | `nicks` 的条数 |
 
