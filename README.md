@@ -504,13 +504,14 @@ Authorization: Bearer <Key>
 ```json
 {"kind": "capes", "title": "披风", "note": "拥有 7 件", "count": 7,
  "worn": {"label": "Minecraft Experience", "image": "data:image/png;base64,…",
-          "source": "Mojang 皮肤属性"},
+          "source": "Minecraft 官方皮肤"},
  "items": [{"label": "Home", "image": "data:…"}, {"label": "Menace", "image": "data:…"}],
  "empty_text": "该账号没有披风"}
 ```
 
-- **`worn`** = 当前**穿在身上**的那件。以 **Mojang 皮肤属性**为准（实时），名字用像素指纹
-  去"拥有"列表里认（Mojang 只给贴图不给名字）。`source` 会写清是从哪来的
+- **`worn`** = 当前**穿在身上**的那件。以 **Minecraft 官方皮肤属性**为准（实时），名字用像素指纹
+  去"拥有"列表里认（Mojang 只给贴图不给名字）—— **只比正面 10×16**：
+  NameMC 的贴图在背面/未用区域跟 Mojang 不一样（同一件披风整张差 119、正面差 0.00）。`source` 会写清是从哪来的
 - **`items`** = **拥有**的其余披风（不含 `worn` 那件，避免重复画），可能为空
 - `count` = 拥有总数（含 `worn`）；`note` 就是"拥有 N 件"
 - 数据源：[NameMC](https://namemc.com) 档案页的 `Capes (N)` 区块（拥有列表 + 谁在穿），
@@ -668,7 +669,7 @@ GET /api/card.png?name=<名字>
 | 日期 | 变更 |
 |---|---|
 | 2026-09-22 | 新增顶层字段 **`avatar`**（头 + 帽子层，我们自己渲染的正交投影，近正面小角度）；网页也改用它（旧的 mc-heads 头像会把帽子层丢掉） |
-| 2026-09-22 | 披风拆成 **当前穿戴 `worn`**（高亮，以 Mojang 皮肤属性为准）和 **拥有 `items`**（爬 NameMC 的 `Capes (N)` 区块）；网页新增 Plancke / NameMC / laby.net 外链；首页文案改为「用过的nick」 |
+| 2026-09-22 | 披风拆成 **当前穿戴 `worn`**（高亮，以 Minecraft 官方皮肤属性为准）和 **拥有 `items`**（爬 NameMC 的 `Capes (N)` 区块）；网页新增 Plancke / NameMC / laby.net 外链；首页文案改为「用过的nick」 |
 | 2026-09-22 | 新增 **`GET /api/player/card`** —— 整张卡片的内容（两列所有块 + 皮肤/披风 data URL + legacy Rank 的 `spans`），90 秒缓存；新增网站内部接口 `/web/api/card`；`api.firebounce.today` 放通整段 `/api/*`（之前只放通了 `/api/denick`，文档里写的 `/api/player`、`/api/card.png` 在线上其实是 404） |
 | 2026-09-22 | `/web/api/*` 改成**服务端注入 Key 后照样校验**（访客看不到 Key，但整站共用那把 Key 的额度）；**限速可配**：新增 `/apikey rate`，管理员能按 Key / 按 QQ 号调每分钟次数（0 = 不限速） |
 | 2026-09-22 | 返回体新增 `names` / `nicks` / `nick_count`（同一个 UUID 的所有名字与昵称）；文档强调 **UUID 是不变主键，正版 ID 会变** |
