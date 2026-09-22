@@ -201,7 +201,20 @@ Authorization: Bearer <Key>
 
 ## 频率限制
 
-**每把 Key 120 次 / 分钟**，超过返回 `429`。
+**每把 Key 默认 120 次 / 分钟**，超过返回 `429`。
+
+管理员可以在 QQ 里**按 Key 或按 QQ 号**单独调额度（机器人命令，不用重启服务）：
+
+| 想改谁 | 命令 | 说明 |
+|---|---|---|
+| 全局默认 | `/apikey rate default 240` | 所有 Key 的默认值（原本 120） |
+| 某一把 Key | `/apikey rate bsk_完整的key 600` | 贴完整 Key；也可以**直接复制** `/apikey list` 里的掩码（`bsk_b4…2656`） |
+| 某个 QQ 号 | `/apikey rate 1197452867 300` | 认申请人填的 QQ 号（那把 Key 跟着走） |
+| 不限速 | 次数填 `0` | 慎用 |
+| 删掉这条覆盖 | `/apikey rate bsk_xxx off` | 回到上一级（QQ 覆盖 → 全局默认） |
+| 看当前配置 | `/apikey rate` | 列出默认值 + 所有覆盖 |
+
+优先级：**具体 Key > 该 Key 的 QQ 号 > 全局默认 > 环境变量 `QQBOT_DENICK_RATE`（120）**。
 
 接口是**本地索引查询**（不经过 Hypixel / Discord），通常 **30~70ms** 返回。
 
@@ -500,8 +513,14 @@ Authorization: Bearer <Key>
 GET /web/api/card?name=<名字 或 UUID 或 昵称>
 ```
 
-- **不需要 Key**（服务器侧注入），但**按 IP 限速**：**7 秒间隔 + 每分钟 6 次**（跟机器人 `/hyp` 完全一致）
+- **不需要你在浏览器里带 Key** —— Key 由服务器侧的 nginx 反向代理注入
+  （`proxy_set_header Authorization "Bearer …"`），**访客永远看不到它**
+- 但服务端**照样要过 Key 校验**，所以那把"网站专用 Key"的额度（默认 120 次/分钟）对整站生效；
+  管理员可以用 `/apikey rate` 调它的额度
+- **面向访客的限速**是按 IP 做的：**7 秒间隔 + 每分钟 6 次**（跟机器人 `/hyp` 完全一致）
 - 只在服务器内部反代（`/web/api/`），不是给第三方用的接口
+
+`/web/api/player` 同规则（也要注入的 Key），`/web/api/search` 不需要（纯本地、按 IP 60 次/分钟）。
 
 ---
 
@@ -626,6 +645,7 @@ GET /api/card.png?name=<名字>
 
 | 日期 | 变更 |
 |---|---|
-| 2026-09-22 | 新增 **`GET /api/player/card`** —— 整张卡片的内容（两列所有块 + 皮肤/披风 data URL + legacy Rank 的 `spans`），90 秒缓存；新增网站内部接口 `/web/api/card`（无 Key、按 IP 限速）；`api.firebounce.today` 放通整段 `/api/*`（之前只放通了 `/api/denick`，文档里写的 `/api/player`、`/api/card.png` 在线上其实是 404） |
+| 2026-09-22 | 新增 **`GET /api/player/card`** —— 整张卡片的内容（两列所有块 + 皮肤/披风 data URL + legacy Rank 的 `spans`），90 秒缓存；新增网站内部接口 `/web/api/card`；`api.firebounce.today` 放通整段 `/api/*`（之前只放通了 `/api/denick`，文档里写的 `/api/player`、`/api/card.png` 在线上其实是 404） |
+| 2026-09-22 | `/web/api/*` 改成**服务端注入 Key 后照样校验**（访客看不到 Key，但整站共用那把 Key 的额度）；**限速可配**：新增 `/apikey rate`，管理员能按 Key / 按 QQ 号调每分钟次数（0 = 不限速） |
 | 2026-09-22 | 返回体新增 `names` / `nicks` / `nick_count`（同一个 UUID 的所有名字与昵称）；文档强调 **UUID 是不变主键，正版 ID 会变** |
 | 2026-09-21 | 接口上线：`GET/POST /api/denick`，API Key 鉴权，每 Key 120 次/分钟 |
