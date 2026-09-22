@@ -415,6 +415,7 @@ Authorization: Bearer <Key>
     "uuid": "543a48ad-0091-4d54-8c63-d08fffb783c0",
     "model": "slim",
     "skin_px": "64×64",
+    "avatar": "data:image/png;base64,iVBOR…",
     "stamp": "2026-09-22 20:50:22 +08:00",
     "generated_at": 1790081422,
     "cached": false,
@@ -439,6 +440,7 @@ Authorization: Bearer <Key>
 | `name` / `uuid` | string | 玩家名 / 带横线 UUID |
 | `model` | string | `slim`（Alex 细手臂）或 `classic`（Steve） |
 | `skin_px` | string \| null | 皮肤贴图分辨率，如 `64×64` |
+| `avatar` | string \| null | **头像**（data URL）：只有头 + **帽子层**（第二层皮肤），近正面小角度、透明底，约 152px 宽。我们自己渲染的，不依赖第三方 —— mc-heads 的 `/avatar/` 丢掉帽子层、`/head/` 又转太多（脸是歪的） |
 | `stamp` | string | 卡片右上角那个时间戳（**取数时刻**，不是同步时间） |
 | `generated_at` | number | 同上，Unix 秒 |
 | `cached` | bool | 是否命中下面的 90 秒缓存 |
@@ -665,6 +667,7 @@ GET /api/card.png?name=<名字>
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-22 | 新增顶层字段 **`avatar`**（头 + 帽子层，我们自己渲染的正交投影，近正面小角度）；网页也改用它（旧的 mc-heads 头像会把帽子层丢掉） |
 | 2026-09-22 | 披风拆成 **当前穿戴 `worn`**（高亮，以 Mojang 皮肤属性为准）和 **拥有 `items`**（爬 NameMC 的 `Capes (N)` 区块）；网页新增 Plancke / NameMC / laby.net 外链；首页文案改为「用过的nick」 |
 | 2026-09-22 | 新增 **`GET /api/player/card`** —— 整张卡片的内容（两列所有块 + 皮肤/披风 data URL + legacy Rank 的 `spans`），90 秒缓存；新增网站内部接口 `/web/api/card`；`api.firebounce.today` 放通整段 `/api/*`（之前只放通了 `/api/denick`，文档里写的 `/api/player`、`/api/card.png` 在线上其实是 404） |
 | 2026-09-22 | `/web/api/*` 改成**服务端注入 Key 后照样校验**（访客看不到 Key，但整站共用那把 Key 的额度）；**限速可配**：新增 `/apikey rate`，管理员能按 Key / 按 QQ 号调每分钟次数（0 = 不限速） |
