@@ -208,7 +208,7 @@ Authorization: Bearer <Key>
 | 想改谁 | 命令 | 说明 |
 |---|---|---|
 | 全局默认 | `/apikey rate default 240` | 所有 Key 的默认值（原本 120） |
-| 某一把 Key | `/apikey rate bsk_完整的key 600` | 贴完整 Key；也可以**直接复制** `/apikey list` 里的掩码（`bsk_b4…2656`） |
+| 某一把 Key | `/apikey rate bsk_完整的key 600` | 贴完整 Key；也可以**直接复制** `/apikey list` 里的掩码（`bsk_a1b2…9f3c`） |
 | 某个 QQ 号 | `/apikey rate 1197452867 300` | 认申请人填的 QQ 号（那把 Key 跟着走） |
 | 不限速 | 次数填 `0` | 慎用 |
 | 删掉这条覆盖 | `/apikey rate bsk_xxx off` | 回到上一级（QQ 覆盖 → 全局默认） |
