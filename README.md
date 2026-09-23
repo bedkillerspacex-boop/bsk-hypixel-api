@@ -520,21 +520,27 @@ Authorization: Bearer <Key>
 披风块**把"当前穿戴"和"拥有"分开**（这是两件事）：
 
 ```json
-{"kind": "capes", "title": "披风", "note": "拥有 7 件", "count": 7,
- "worn": {"label": "Minecraft Experience", "image": "data:image/png;base64,…",
-          "source": "Minecraft 官方皮肤"},
- "items": [{"label": "Home", "image": "data:…"}, {"label": "Menace", "image": "data:…"}],
+{"kind": "capes", "title": "披风", "note": "拥有 5 件", "count": 5,
+ "worn": [
+   {"label": "Migrator", "image": "data:image/png;base64,…", "source": "Minecraft 官方皮肤"},
+   {"label": "OptiFine 披风", "image": "data:…",
+    "source": "OptiFine（显示时盖住官方那件）"}
+ ],
+ "items": [{"label": "Builder", "image": "data:…"}, {"label": "Menace", "image": "data:…"}],
  "empty_text": "该账号没有披风"}
 ```
 
-- **`worn`** = 当前**穿在身上**的那件。以 **Minecraft 官方皮肤属性**为准（实时），名字用像素指纹
-  去"拥有"列表里认（Mojang 只给贴图不给名字）—— **只比正面 10×16**：
-  NameMC 的贴图在背面/未用区域跟 Mojang 不一样（同一件披风整张差 119、正面差 0.00）。`source` 会写清是从哪来的
-- **`items`** = **拥有**的其余披风（不含 `worn` 那件，避免重复画），可能为空
-- `count` = 拥有总数（含 `worn`）；`note` 就是"拥有 N 件"
+- **`worn` 是数组 —— 可以有两件**：**官方披风（Mojang）和 OptiFine 披风是同时装备的**，
+  只是显示上分客户端：装了 OptiFine 的人看到 OF 那件（它**盖住**官方那件），原版客户端看到官方那件。
+  所以两件都标「当前穿戴」，不存在"OptiFine 那件没穿"这回事
+- 官方那件以 **Minecraft 官方皮肤属性**为准（实时），名字用像素指纹去"拥有"列表里认
+  （Mojang 只给贴图不给名字）—— **只比正面 10×16**：NameMC 的贴图在背面/未用区域跟 Mojang
+  不一样（同一件披风整张差 119、正面差 0.00）。`source` 会写清是从哪来的
+- **`items`** = **拥有**的其余披风（不含正在穿的，避免重复画），可能为空
+- `count` = 拥有总数（含正在穿的）；`note` 就是"拥有 N 件"
 - 数据源：[NameMC](https://namemc.com) 档案页的 `Capes (N)` 区块（拥有列表 + 谁在穿），
-  贴图走 `s.namemc.com`。**laby.net 的 API 现在要 edge challenge token，爬不了**，
-  所以没用它；OptiFine 披风是另一套系统，会作为额外一项出现在 `items` 里
+  贴图走 `s.namemc.com`。**laby.net 的 API 现在要 edge challenge token，爬不了**；
+  OptiFine 披风是另一套系统（NameMC 不列），它**也在穿戴中**，所以和官方那件并列在 `worn` 里
 - 披风贴图有 30 天磁盘缓存；冷启动时若某张缩略图没赶上建卡预算，这一次 `image` 会是 `null`，
   但名字照给，后台线程会把缓存补上（下次就有图）
 
@@ -695,6 +701,7 @@ GET /api/card.png?name=<名字>
 | 日期 | 变更 |
 |---|---|
 | 2026-09-22 | 更正一处**写反了的事实**：管理员在白名单里、**审批通知的私聊是能送到的**（日志实测 `通知管理员 1`）；发不出私聊的只是**普通申请人**，所以 Key 仍必须走 QQ 邮箱。另外补了兜底：万一私聊全失败，会在群里提示一句 |
+| 2026-09-23 | 披风修正：**`worn` 改成数组** —— 官方披风和 OptiFine 披风是**同时装备**的（OF 那件只是**显示时盖住**官方那件），以前把 OptiFine 塞进「拥有」等于说它没穿，是错的；卡片上现在两件各占一行「当前穿戴」 |
 | 2026-09-23 | 三条修正：① **坏卡不许顶用** —— 缓存里那张卡如果当初是「数据源异常」时出的，过期后**不会**再拿旧的糊弄（否则 Key 修好了、用户查到的还是空卡）；② Hypixel 偶尔返回 `success=true + player=null`，这种**空结果不再进 10 分钟缓存**（以前一存就把这号坑 10 分钟）；③ 「这号没进过 Hypixel」不再触发管理员告警，只有 Key 失效/限流才提醒 |
 | 2026-09-23 | 新增顶层字段 **`warn`**：数据源异常（比如 Hypixel API Key 失效）时，卡片顶部出现红色「数据源异常」通栏、网页也显示横幅，并**私聊提醒管理员**（一小时一次）。起因：Key 挂了以前**完全不报错**，战绩整片是 `-`，容易被误读成「这号没数据」 |
 | 2026-09-22 | **出图也加缓存**：`/hyp` 与 `/api/card.png` 现在共用一套 90 秒缓存 + 30 分钟 stale-while-revalidate —— 同一个玩家连着查从 ~3 秒变成 **~10ms**；新增响应头 `X-Card-Age` 如实报告数据多旧 |
