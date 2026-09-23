@@ -4,6 +4,8 @@
 
 ```
 Base URL:  https://api.firebounce.today
+版本:      /api/<端点>        = 走**最新版**（现在 v1）
+           /api/<端点>/v1     = 写死 v1；响应头 X-API-Version 会告诉你实际走了哪版
 Endpoint:  GET / POST  /api/denick          昵称 -> 真名/UUID
            GET / POST  /api/player          身份 + 战绩 + 可疑度 + 标签
            GET / POST  /api/player/card     整张卡片的内容(JSON, 网页靠它渲染)
@@ -84,6 +86,48 @@ bsk_00000000000000000000000000000000
 | 请求头 | `Authorization: Bearer bsk_xxx` | ✅ **推荐**（Key 不会进 URL / 访问日志） |
 | 请求头 | `X-API-Key: bsk_xxx` | ✅ 可以 |
 | 查询参数 | `?key=bsk_xxx` | ⚠️ 方便，但 Key 会出现在 URL 和日志里 |
+
+---
+
+## 版本化
+
+**不带版本号 = 最新版**，也可以写死版本：
+
+```http
+GET /api/denick?nick=theoshadow          # 最新版（现在等于 v1）
+GET /api/denick/v1?nick=theoshadow       # 明确 v1
+```
+
+- 版本号是**路径最后一段**：`/api/player/card/v1` → 端点 `player/card` + 版本 `v1`
+- 所有响应都带 `X-API-Version`（实际走的版本）和 `X-API-Latest`（当前最新）
+- 不认识的版本 → `404 {"error": "unknown_version"}`，并告诉你支持哪些
+- `/api`（不带端点）会返回**端点清单**，自己发现用
+- 老路径（`/api/denick`、`/api/player/card` …）**继续可用**，不会因为加版本而失效
+
+---
+
+## 网站短期令牌
+
+网站（hyp.firebounce.today）**不给访客发 API Key**，而是按 IP 签一个**短期令牌**：
+
+```http
+GET /web/api/token            # 同源，只能从网站调
+→ {"ok": true, "token": "wt1_…", "token_type": "Bearer",
+   "expires_at": 1790169527, "ttl": 900, "per_min": 60}
+```
+
+拿到之后**直接查版本化接口**（不用再走 `/web/api/card` 那道"每 IP 7 秒一次"的闸门）：
+
+```http
+GET /api/player/card/v1?name=bsk10ww
+Authorization: Bearer wt1_…
+```
+
+- **有效期 15 分钟**、**绑 IP**（换网络/过期就重新签一个）、**60 次/分钟**
+- 它**不是** API Key：不进 Key 列表、不能被 `/apikey revoke`、到期自动失效
+- 签发本身也限速（15 秒 1 个 / 每小时 20 个），防止被拿去刷令牌
+- 为什么这么设计：站长的 Key 永远不下发到浏览器；每个访客有自己的额度，所以连查多个玩家
+  不会被"每 IP 7 秒一次"卡住（这就是"网页查询慢"的老原因）
 
 ---
 
@@ -701,6 +745,7 @@ GET /api/card.png?name=<名字>
 | 日期 | 变更 |
 |---|---|
 | 2026-09-22 | 更正一处**写反了的事实**：管理员在白名单里、**审批通知的私聊是能送到的**（日志实测 `通知管理员 1`）；发不出私聊的只是**普通申请人**，所以 Key 仍必须走 QQ 邮箱。另外补了兜底：万一私聊全失败，会在群里提示一句 |
+| 2026-09-23 | **API 版本化**：`/api/<端点>` = 最新版，`/api/<端点>/v1` 写死版本（响应头 `X-API-Version` / `X-API-Latest`，不认识的版本 404，`/api` 列端点清单）；新增**网站短期令牌** `GET /web/api/token`（绑 IP、15 分钟、60 次/分钟），网页拿它**直接查 `/api/...`**，不再挤「每 IP 7 秒一次」那道闸门 —— 这是网页查询慢的老原因 |
 | 2026-09-23 | 披风修正：**`worn` 改成数组** —— 官方披风和 OptiFine 披风是**同时装备**的（OF 那件只是**显示时盖住**官方那件），以前把 OptiFine 塞进「拥有」等于说它没穿，是错的；卡片上现在两件各占一行「当前穿戴」 |
 | 2026-09-23 | 三条修正：① **坏卡不许顶用** —— 缓存里那张卡如果当初是「数据源异常」时出的，过期后**不会**再拿旧的糊弄（否则 Key 修好了、用户查到的还是空卡）；② Hypixel 偶尔返回 `success=true + player=null`，这种**空结果不再进 10 分钟缓存**（以前一存就把这号坑 10 分钟）；③ 「这号没进过 Hypixel」不再触发管理员告警，只有 Key 失效/限流才提醒 |
 | 2026-09-23 | 新增顶层字段 **`warn`**：数据源异常（比如 Hypixel API Key 失效）时，卡片顶部出现红色「数据源异常」通栏、网页也显示横幅，并**私聊提醒管理员**（一小时一次）。起因：Key 挂了以前**完全不报错**，战绩整片是 `-`，容易被误读成「这号没数据」 |
