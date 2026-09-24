@@ -108,27 +108,11 @@ GET /api/denick/v1?nick=theoshadow       # 明确 v1
 ## 网站短期令牌
 
 网站（hyp.firebounce.today）**不给访客发 API Key**，而是按 IP 签一个**短期令牌**：
-
-```http
-GET /web/api/token            # 同源，只能从网站调
-→ {"ok": true, "token": "wt1_…", "token_type": "Bearer",
-   "expires_at": 1790169527, "ttl": 900, "per_min": 60}
-```
-
 拿到之后**直接查版本化接口**（不用再走 `/web/api/card` 那道"每 IP 7 秒一次"的闸门）：
-
-```http
-GET /api/player/card/v1?name=bsk10ww
-Authorization: Bearer wt1_…
-```
-
-- **有效期 15 分钟**、**绑 IP**（换网络/过期就重新签一个）、**60 次/分钟**
 - 它**不是** API Key：不进 Key 列表、不能被 `/apikey revoke`、到期自动失效
-- 签发本身也限速（15 秒 1 个 / 每小时 20 个），防止被拿去刷令牌
 - 这个响应**绝不能被缓存**（`Cache-Control: no-store`，服务器侧也禁了 nginx 缓存）：
   令牌是绑 IP 的，一旦被缓存，后来的人拿到的就是**别人签发的旧令牌** → 一律 ip mismatch
-- 为什么这么设计：站长的 Key 永远不下发到浏览器；每个访客有自己的额度，所以连查多个玩家
-  不会被"每 IP 7 秒一次"卡住（这就是"网页查询慢"的老原因）
+
 
 ---
 
