@@ -16,6 +16,7 @@ Endpoint:  GET / POST  /api/denick          昵称 -> 真名/UUID
            GET         /api/nick-history    某个昵称的完整出现历史
 ```
 
+> ⚠️ **数据来自社区记录**（Discord 服务器 `swag` 里 `Hypixel Tracker` bot 发的内容），
 > **不是 Hypixel 官方数据**，可能过期或有错。**同名 ≠ 同一人**是常态，见文末 [注意事项](#注意事项重要)。
 
 ---
@@ -68,6 +69,46 @@ Endpoint:  GET / POST  /api/denick          昵称 -> 真名/UUID
 - 管理员：`/apikey pending` 看待审、`/apikey approve <编号>` 同意、`/apikey list` 看已发出的 Key、
   `/apikey revoke <key>` 停用、`/apikey rate` 调限速（见 [频率限制](#频率限制)）
 
+### 查某个人：`/apikey status`
+
+不带参数 = 看自己（**已经有 Key 的话会直接告诉你掩码**，不再误报"你还没申请过"）：
+
+```
+/apikey status
+```
+
+带参数 = 查那一个人。参数可以是 **QQ 号 / openid / Key / Key 掩码 / 申请编号** 任意一种
+（普通人只能查自己，管理员能查任何人）：
+
+```
+/apikey status 123456789
+/apikey status 74E421647E938DFC52140A8F75244892
+/apikey status bsk_a1b2…9f3c
+/apikey status 03a5
+```
+
+会一次性列出：openid、这个人的所有 Key（含启用状态 / 用量）、最近的申请、
+**实际生效的额度**，以及任何"哪里不对"的提示。查不到时会**说明为什么**，
+不会只回一句"没查到"。
+
+### QQ 号和 openid 的对应关系：`/apikey bind`
+
+平台只给 openid，从不给 QQ 号 —— 而**按 QQ 号配的限速必须先把 QQ 绑到人身上才生效**。
+绑定的可信来源只有两个：申请人自己的**邮箱验证码**（发 `/apikey 你的QQ号` →
+`/apikey verify <验证码>` 即可，走完就自动绑上），或者管理员手动绑：
+
+```
+/apikey bind 123456789 bsk_a1b2…9f3c     # 把 QQ 号绑到这个 Key 的人身上
+/apikey unbind 123456789                  # 解绑
+```
+
+> ⚠️ **一个 QQ 号只能属于一个人。** 已经绑给别人时会直接拒绝，不会静默覆盖 ——
+> 要改先 `unbind`。
+>
+> 💡 如果 `/apikey rate <QQ号> <次数>` 配完发现**没生效**，基本就是这个原因：
+> 那个 QQ 号还没绑到任何 Key 上。`/apikey rate` 和 `/apikey list` 都会把这种
+> **"配了但不生效"的覆盖显式标出来**。
+
 Key 长这样（下面都是**示例占位**，不是真的）：
 
 ```
@@ -108,11 +149,27 @@ GET /api/denick/v1?nick=theoshadow       # 明确 v1
 ## 网站短期令牌
 
 网站（hyp.firebounce.today）**不给访客发 API Key**，而是按 IP 签一个**短期令牌**：
+
+```http
+GET /web/api/token            # 同源，只能从网站调
+→ {"ok": true, "token": "wt1_…", "token_type": "Bearer",
+   "expires_at": 1790169527, "ttl": 900, "per_min": 60}
+```
+
 拿到之后**直接查版本化接口**（不用再走 `/web/api/card` 那道"每 IP 7 秒一次"的闸门）：
+
+```http
+GET /api/player/card/v1?name=bsk10ww
+Authorization: Bearer wt1_…
+```
+
+- **有效期 15 分钟**、**绑 IP**（换网络/过期就重新签一个）、**60 次/分钟**
 - 它**不是** API Key：不进 Key 列表、不能被 `/apikey revoke`、到期自动失效
+- 签发本身也限速（15 秒 1 个 / 每小时 20 个），防止被拿去刷令牌
 - 这个响应**绝不能被缓存**（`Cache-Control: no-store`，服务器侧也禁了 nginx 缓存）：
   令牌是绑 IP 的，一旦被缓存，后来的人拿到的就是**别人签发的旧令牌** → 一律 ip mismatch
-
+- 为什么这么设计：站长的 Key 永远不下发到浏览器；每个访客有自己的额度，所以连查多个玩家
+  不会被"每 IP 7 秒一次"卡住（这就是"网页查询慢"的老原因）
 
 ---
 
@@ -291,12 +348,18 @@ Authorization: Bearer <Key>
 |---|---|---|
 | 全局默认 | `/apikey rate default 240` | 所有 Key 的默认值（原本 120） |
 | 某一把 Key | `/apikey rate bsk_完整的key 600` | 贴完整 Key；也可以**直接复制** `/apikey list` 里的掩码（`bsk_a1b2…9f3c`） |
-| 某个 QQ 号 | `/apikey rate 123456789 300` | 认申请人填的 QQ 号（那把 Key 跟着走） |
+| 某个 QQ 号 | `/apikey rate 123456789 300` | 认这个 QQ 号 —— **必须先 `/apikey bind` 过，否则不生效** |
 | 不限速 | 次数填 `0` | 慎用 |
 | 删掉这条覆盖 | `/apikey rate bsk_xxx off` | 回到上一级（QQ 覆盖 → 全局默认） |
-| 看当前配置 | `/apikey rate` | 列出默认值 + 所有覆盖 |
+| 看当前配置 | `/apikey rate` | 列出默认值 + 所有覆盖，并标出**匹配不到 Key、实际不生效**的那些 |
 
 优先级：**具体 Key > 该 Key 的 QQ 号 > 全局默认 > 环境变量 `QQBOT_DENICK_RATE`（120）**。
+
+> ⚠️ **按 QQ 号配的覆盖只有在那个 QQ 已绑到某把 Key 上时才生效。**
+> 没绑就是白配 —— 命令会成功返回，但额度一点没变。`/apikey rate` 与 `/apikey list`
+> 会把这种覆盖单独列出来提醒你，`/apikey status <QQ号>` 也会直说
+> "有一条限速覆盖 N 次/分，但没有任何 Key 绑在这个 QQ 上，所以它现在不生效"。
+> 绑法见 [QQ 号和 openid 的对应关系](#qq-号和-openid-的对应关系apikey-bind)。
 
 接口是**本地索引查询**（不经过 Hypixel / Discord），通常 **30~70ms** 返回。
 
@@ -786,6 +849,7 @@ GET /api/card.png?name=<名字>
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-24 | **修 `/apikey status <QQ号>` 读不到任何信息**：老代码**把参数静默丢掉**，拿发送者自己的 openid 去查，回一句"你还没申请过" —— 一个字节的信息都没有。而且对**已经有 Key 的人**也回这一句（因为只查"申请记录"，不看"你已经有一把 Key 了"）。现在 `/apikey status` 不带参数看自己（有 Key 就直接报掩码），带参数按 **QQ号 / openid / Key / 掩码 / 申请编号** 查那个人，一次列全 Key、申请、实际额度和异常提示；查不到会**说明为什么**。顺带补上根因：平台只给 openid，所以新增 **openid ↔ QQ 对照表**（`denick_people.json`，只在**邮箱验证码通过**或管理员 `/apikey bind` 时写入）—— 之前按 QQ 号配的限速**永远不生效**（Key 记录里根本没有 QQ 字段），现在 `/apikey bind` 后立即生效，并且 `/apikey rate`、`/apikey list`、`/apikey status` 都会把**"配了但匹配不到 Key、实际不生效"的覆盖显式列出来**。一个 QQ 号只能属于一个人，抢绑直接拒绝并提示先 `unbind`。另：指令现在会记日志（谁 / 哪个来源 / 参数，Key 已打码），这类"参数被吞"的问题不用再靠猜 |
 | 2026-09-24 | **延迟推地区改成「分布」**：`ping_region` 从 `"亚洲·大洋洲(大致)"` 这种一个词，改成带**实测占比**的 `"亚洲 41% / 大洋洲 29%(大致)"`，并新增结构化的 **`region_guess`**（`[{"region","pct"}]`，省得解析字串）。占比是那 41 个干净样本上的**实测分布**，只列 ≥20% 的地区，而且**故意不归一到 100%** —— 归一会把 `≥165ms` 里那 18% 的非洲藏掉，读起来像"只可能是亚洲或大洋洲"。`(大致)` 后缀保留 |
 | 2026-09-24 | 新增查询偏好 **`prefer`**（`/api/denick`）：三种匹配（`uuid` / `nick` / `ign`）指向的**可能是不同的人** —— 一个字符串既是甲的昵称又是乙的真名时，顺序决定查到谁。`?prefer=ign` 就是"先当真名查"，也支持 `prefer=ign,nick` 给完整顺序；**不传则与以前完全一致**（`uuid → nick → ign`）。写错返回 400 `bad_prefer` 并列出 `accepted`；404 现在带 `tried`，一眼看出是"真没有"还是"偏好设歪了"。`/api` 的端点清单也加了参数提示 |
 | 2026-09-22 | 更正一处**写反了的事实**：管理员在白名单里、**审批通知的私聊是能送到的**（日志实测 `通知管理员 1`）；发不出私聊的只是**普通申请人**，所以 Key 仍必须走 QQ 邮箱。另外补了兜底：万一私聊全失败，会在群里提示一句 |
