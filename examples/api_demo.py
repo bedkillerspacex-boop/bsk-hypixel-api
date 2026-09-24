@@ -19,7 +19,7 @@ BSK 公共查询 API —— **全端点**演示（只用标准库，无第三方
     6  GET /api/search                昵称/真名模糊搜索
     7  GET /api/recent                最近记录到的昵称(轮询用)
     8  GET /web/api/token             网站短期令牌 -> 拿它再查 /api/...
-    9  版本化                         /v1 固定版本、不认识的版本 404
+    9  版本化                         不带版本 / v1 / v1-YYMMDD, 写错的版本 404
 
 认证: 三种写法等价, 任选一种(推荐请求头, 免得 Key 进访问日志)
     Authorization: Bearer bsk_xxx
@@ -222,11 +222,20 @@ def main(argv):
     else:
         show(st, d)
 
-    step(9, "版本化: /api/<端点>/v1 固定版本; 不认识的版本直接 404")
-    st, h, d = call("/api/denick/v1", {"nick": nick}, base=base)
-    print("    /api/denick/v1     -> HTTP %s  X-API-Version=%s  X-API-Latest=%s"
+    step(9, "版本化: 不带版本 = 最新; v1 = 最新的 v1; v1-YYMMDD = 钉死那一版")
+    st, h, d = call("/api/denick", {"nick": nick}, base=base)
+    print("    /api/denick          -> HTTP %s  X-API-Version=%-10s latest=%s"
           % (st, h.get("X-API-Version"), h.get("X-API-Latest")))
+    st, h, d = call("/api/denick/v1", {"nick": nick}, base=base)
+    print("    /api/denick/v1       -> HTTP %s  X-API-Version=%-10s latest=%s"
+          % (st, h.get("X-API-Version"), h.get("X-API-Latest")))
+    # 日期版: 从 X-API-Latest 里拿, 所以这个示例永远跟着线上最新版走
+    dated = h.get("X-API-Latest") or "v1"
+    st, h2, d = call("/api/denick/%s" % dated, {"nick": nick}, base=base)
+    print("    /api/denick/%-8s -> HTTP %s  X-API-Version=%-10s (钉死这一版)"
+          % (dated, st, h2.get("X-API-Version")))
     st, _, d = call("/api/denick/v9", {"nick": nick}, base=base)
+    print("    /api/denick/v9       -> HTTP %s (未来的版本号要拒掉)" % st)
     show(st, d)
 
     step(10, "不给 Key 会怎样(匿名)")
