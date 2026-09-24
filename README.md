@@ -16,7 +16,6 @@ Endpoint:  GET / POST  /api/denick          昵称 -> 真名/UUID
            GET         /api/nick-history    某个昵称的完整出现历史
 ```
 
-> ⚠️ **数据来自社区记录**（Discord 服务器 `swag` 里 `Hypixel Tracker` bot 发的内容），
 > **不是 Hypixel 官方数据**，可能过期或有错。**同名 ≠ 同一人**是常态，见文末 [注意事项](#注意事项重要)。
 
 ---
