@@ -153,6 +153,29 @@ Authorization: Bearer <Key>
 > 拿游戏里看到的**真名**反查"他有哪些昵称"是最常用的方向 —— 直接 `?nick=<真名>` 就行。
 > 按真名/UUID 查时，`nick` 返回的是该玩家**最新**的那个昵称，`nicks` 是全部。
 
+#### 查询偏好 `prefer` —— 先按哪种查
+
+三种匹配是**不同的人**：某个字符串完全可能既是甲的昵称、又是乙的真名。默认顺序是
+`uuid → nick → ign`，想改就加 `prefer`：
+
+| 传什么 | 实际尝试顺序 | 什么时候用 |
+|---|---|---|
+| 不传 / `prefer=auto` | `uuid → nick → ign` | 默认，和以前一样 |
+| `prefer=nick` | `nick → uuid → ign` | 明确"我这是昵称" |
+| `prefer=ign` | `ign → uuid → nick` | 明确"我这是真名/旧名"，避免撞上同名的昵称 |
+| `prefer=uuid` | `uuid → nick → ign` | 明确"我这是 UUID"（不是 32 位十六进制时这一轮自动跳过，不会误判） |
+| `prefer=ign,nick` | 按你给的顺序，没提到的补在后面 | 想完整控制顺序 |
+
+```http
+GET /api/denick?nick=shared&prefer=ign
+GET /api/denick?nick=shared&prefer=ign,nick
+```
+
+- 返回体里的 **`matched_by`** 告诉你这次实际是靠什么命中的（`nick` / `ign` / `uuid`）。
+- `prefer` 写错会返回 **400 `bad_prefer`**，并在 `accepted` 里列出可用值。
+- 查不到时返回 404，并带上 `tried`（本次按什么顺序试过）—— 便于判断"是不是偏好设错了"。
+- **不传 `prefer` 的行为和以前完全一致**，老调用方不受影响。
+
 ### ② 用 UUID 反查
 
 ```http
@@ -241,7 +264,20 @@ Authorization: Bearer <Key>
   "ok": false,
   "error": "not_found",
   "message": "索引里没有这个昵称/UUID",
-  "query": "zzz_nope"
+  "query": "zzz_nope",
+  "tried": ["uuid", "nick", "ign"]
+}
+```
+
+`tried` 是本次实际尝试过的匹配方式（受 `prefer` 影响）—— 查不到时先看它，就能判断
+是"真没有"还是"偏好设歪了"。`prefer` 写错时则是 `bad_prefer` + `accepted`：
+
+```json
+{
+  "ok": false,
+  "error": "bad_prefer",
+  "message": "prefer 只能是 uuid/nick/ign（或 auto）; 不认识: nope",
+  "accepted": ["uuid", "nick", "ign"]
 }
 ```
 
@@ -252,10 +288,11 @@ Authorization: Bearer <Key>
 | HTTP | `error` | 意思 | 怎么处理 |
 |---|---|---|---|
 | 400 | `missing_param` | 既没给 `nick` 也没给 `uuid` | 补参数 |
+| 400 | `bad_prefer` | `prefer` 写了不认识的值 | 看响应里的 `accepted`（`uuid` / `nick` / `ign`），或直接不传 |
 | 401 | `missing_key` | 没带 Key | 加 `Authorization` 头 |
 | 401 | `invalid_key` | Key 不存在 | 检查 Key 有没有抄错 |
 | 401 | `key_disabled` | Key 被管理员停用了 | 找管理员重新申请 |
-| 404 | `not_found` | 索引里没有这个昵称/UUID | 可能没被记录过，或拼错了 |
+| 404 | `not_found` | 索引里没有这个昵称/UUID | 可能没被记录过，或拼错了；响应里有 `tried` 说明本次试过哪些方式 |
 | 429 | `rate_limited` | 超过频率限制 | 退避重试（见下） |
 | 500 | `internal` | 服务内部错误 | 稍后重试 |
 
@@ -304,6 +341,10 @@ curl -s -H "Authorization: Bearer $BSK_KEY" \
 # 查 UUID
 curl -s -H "X-API-Key: $BSK_KEY" \
      "https://api.firebounce.today/api/denick?uuid=694cd52b-8197-45f0-b28d-ad73eb299699"
+
+# 指定先按"真名/旧名"查（这个名字同时也是别人的昵称时，默认会先命中昵称）
+curl -s -H "Authorization: Bearer $BSK_KEY" \
+     "https://api.firebounce.today/api/denick?nick=shared&prefer=ign"
 
 # POST
 curl -s -X POST -H "Authorization: Bearer $BSK_KEY" \
@@ -752,6 +793,7 @@ GET /api/card.png?name=<名字>
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-24 | 新增查询偏好 **`prefer`**（`/api/denick`）：三种匹配（`uuid` / `nick` / `ign`）指向的**可能是不同的人** —— 一个字符串既是甲的昵称又是乙的真名时，顺序决定查到谁。`?prefer=ign` 就是"先当真名查"，也支持 `prefer=ign,nick` 给完整顺序；**不传则与以前完全一致**（`uuid → nick → ign`）。写错返回 400 `bad_prefer` 并列出 `accepted`；404 现在带 `tried`，一眼看出是"真没有"还是"偏好设歪了"。`/api` 的端点清单也加了参数提示 |
 | 2026-09-22 | 更正一处**写反了的事实**：管理员在白名单里、**审批通知的私聊是能送到的**（日志实测 `通知管理员 1`）；发不出私聊的只是**普通申请人**，所以 Key 仍必须走 QQ 邮箱。另外补了兜底：万一私聊全失败，会在群里提示一句 |
 | 2026-09-23 | **修 markdown 转义导致的漏记录**：Discord 把名字里的下划线渲染成 `\_`，老解析器原样存下来 —— 昵称带下划线就**用真实拼写查不到**（索引里是 `all\_phoenix`，查 `all_phoenix` 返回 404，实测 10 个），真名带下划线则**整条记录被丢**（`^[A-Za-z0-9_]{1,16}$` 校验被 `\_` 打掉，实测 5 条，如 `ColdGame → RayanCherki_`）。现在解析时先反转义再存，并从本地归档 `rebuild()` 重算索引：**索引 39,476 → 39,472 条**（少的 4 条是同一人合并），带 `\` 的键 10 → 0，**UUID 覆盖率不变**（重建前后逐条比对：时间只会更新、不会更旧）|
 | 2026-09-23 | **延迟推地区改回「粗粒度大致方位」**：之前一刀切成不推（实测单标签 59%~64%，英国 222ms / 澳洲 234ms / 中国 201ms 全落在同一段），结果只有 4% 的玩家有地区，卡面常年 `-` 也没信息量。现在按 41 个「NameMC 自设国家 + bordic 延迟」的干净样本重新标定成 3 档：`< 75ms → 北美` / `75~165ms → 欧美` / `≥ 165ms → 亚洲·大洋洲`，每档留两三个地区兜底，**整体 76%**（单档 67% / 83% / 71%），后缀写 `(大致)` 跟语言推的 `(推测)` 区分开。`ping_region` 字段同时恢复，另外新增：`country` 现在跟卡片走同一套取值逻辑 |
