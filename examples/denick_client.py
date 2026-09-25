@@ -10,7 +10,7 @@ BSK denick 查询 API —— Python 客户端示例（只用标准库，无第�
     python3 denick_client.py --batch nick1 nick2 nick3
     python3 denick_client.py --json theoshadow        # 打印原始 JSON
 
-文档: https://github.com/bedkillerspacex-boop/bsk-denick-api
+文档: https://github.com/bedkillerspacex-boop/bsk-hypixel-api
 申请 Key: 在 QQ 群里发  /apikey 你的QQ号  (机器人发不出私聊, Key 走你的 QQ 邮箱)
 """
 from __future__ import annotations

@@ -1,11 +1,11 @@
-# BSK denick 查询 API
+# BSK Hypixel API
 
-> 📌 **这个仓库里有两个服务**（仓库名只体现了第一个）：
+> 📌 **这个仓库里有两个服务，接口格式完全不同，别照抄**：
 >
-> | 服务 | Base | 说明 |
+> | 服务 | Base | 格式 |
 > |---|---|---|
-> | **denick 查询** | `https://api.firebounce.today` | 本站自有接口，见本文档 |
-> | **Hypixel 官方 API 反代** | `https://hyp-api.firebounce.today` | **镜像 Hypixel 官方接口**，[官方文档](https://github.com/HypixelDev/PublicAPI)，见[这一节](#hypixel-官方接口反代) |
+> | **denick 查询** | `https://api.firebounce.today` | 本站自有 `{ok, data}` 格式，见本文档 |
+> | **Hypixel 官方 API 反代** | `https://hyp-api.firebounce.today` | **就是 Hypixel 官方格式** —— 端点和字段以 [官方文档](https://github.com/HypixelDev/PublicAPI) 为准，见[这一节](#hypixel-官方接口反代) |
 >
 > 给 AI / 爬虫的入口索引另见 [`llms.txt`](./llms.txt)。
 
@@ -18,7 +18,7 @@ Base URL:  https://api.firebounce.today
 Endpoint:  GET / POST  /api/denick          昵称 -> 真名/UUID
            GET / POST  /api/player          身份 + 战绩 + 可疑度 + 标签
            GET / POST  /api/player/card     整张卡片的内容(JSON, 网页靠它渲染)
-           GET         /api/card.png        整张卡片(PNG)
+           (已下线)    /api/card.png        410 —— 改用 /api/player/card
            GET         /api/tags            只要反作弊标签(最轻量)
            GET         /api/search          昵称/真名模糊搜索(本地)
            GET         /api/recent          最近记录到的昵称(轮询)
@@ -375,12 +375,12 @@ Authorization: Bearer <Key>
 
 | 响应大小 | 扣多少 |
 |---|---|
-| 普通响应（≤ 1 MB） | **1** |
-| > 1 MB | **4**（1 + 3） |
-| > 5 MB | **8**（1 + 7） |
+| 普通响应（≤ 3 MB） | **1** |
+| > 3 MB | **7**（1 + 6） |
+| > 5 MB | **15**（1 + 14） |
 
 > `MB` 按**十进制**算（1 MB = 1,000,000 字节）。边界是**严格大于**：
-> 正好 1 MB 仍算 1，正好 5 MB 仍算 4。
+> 正好 3 MB 仍算 1，正好 5 MB 仍算 7。
 
 **为什么**：`/v2/resources/skyblock/items` 有 **5 MB**，而查一次 `/v2/status`
 只有 85 字节。两者在我们这边（带宽 / 内存 / 上游等待）成本差得很远，按次数一刀切
@@ -391,11 +391,11 @@ Authorization: Bearer <Key>
 ```bash
 curl -s -D - -o /dev/null -H "API-Key: bsk_你的key" \
   "https://hyp-api.firebounce.today/v2/resources/skyblock/items" | grep -i x-quota-cost
-# X-Quota-Cost: 8
+# X-Quota-Cost: 15
 ```
 
 > 💡 这些 `resources/*` 是**静态资源**（官方文档说几天才更新一次）。
-> 要反复用请**本地缓存** —— 不然每拉一次就扣 8。
+> 要反复用请**本地缓存** —— 不然每拉一次就扣 15。
 
 管理员可以在 QQ 里**按 Key 或按 QQ 号**单独调额度（机器人命令，不用重启服务）：
 
@@ -614,7 +614,7 @@ Authorization: Bearer <Key>
 
 **整张卡片的全部内容**（就是 QQ 机器人 `/hyp` 发出来的那张图上的所有东西）以 JSON 返回。
 
-和 `/api/card.png`（直接拿 PNG，见下文）的区别：**只取数据、不渲染图片**，
+和已下线的 `/api/card.png` 的区别：**只取数据、不渲染图片**，
 所以快得多 —— 省掉了最贵的那步画图。网页版 `hyp.firebounce.today` 就是靠这个接口
 把卡片完整画出来的（"把图片搬到网页上"）。
 
@@ -858,30 +858,31 @@ GET /api/nick-history?nick=<昵称>&limit=200
 数据来自**本地消息归档**（拉下来的原始记录，按消息 id 去重），所以是**真实出现记录**，
 不是推断。`count` 是出现过几次，`channels` 是各频道分布。纯本地，约 0.3 秒。
 
-### `/api/card.png` —— 直接拿卡片图
+### `/api/card.png` —— 已下线
 
-```http
-GET /api/card.png?name=<名字>
+**这个接口没有了，现在返回 `410 gone`。**
+
+```json
+{"ok": false, "error": "gone",
+ "message": "/api/card.png 已下线: 没人用且每次都要真的渲染 PNG, 太费算力。改用 /api/player/card 拿 JSON(快得多), 或在群里发 /hyp <名字>"}
 ```
 
-返回 `image/png`（1140px 宽，**约 150~350 KB**，看皮肤/披风复杂度和图片本身），
-带 `Cache-Control: max-age=300`，可以直接嵌网页或插件里：
+下线原因（2026-09-25）：**没人用**，而且每次调用都要**真的渲染一张 PNG**
+（几十 MB 内存 + CPU），纯浪费算力。
 
-```html
-<img src="https://api.firebounce.today/api/card.png?name=bsk10ww&key=bsk_xxx">
-```
+想拿卡片图有两条路：
 
-> ⚠️ 这个接口**会真的渲染卡片**（跑 Hypixel/Urchin/Mojang 一圈），冷查询 **2~5 秒**，
-> 所以跟 `/api/player` 一样受**全局闸门**限制。Key 放在 URL 里会被访问日志记下，
-> 内部用建议走请求头。
+| 想要 | 用什么 |
+|---|---|
+| 一张图 | 在群里发 `/hyp <名字>`（机器人出图） |
+| 自己渲染 | `GET /api/player/card` —— 同样是整张卡片的内容（两列所有块 + 皮肤/披风/头像的 data URL），但**不出图**，快得多 |
 
-**缓存**：跟 `/api/player/card` 同一套 —— 同一个玩家 **90 秒内直接复用**（重复调用
-**≈10ms**，就是读一次缓存），90 秒 ~ 30 分钟**先回旧的 + 后台重新出图**。
-数据新旧看响应头 `X-Card-Age`（秒；`0` 表示这次是现出的）。
+> 之所以保留路由回一句 `410` 而不是直接删掉：删了就掉进 `404 查无此路`，
+> 调用方分不清是"接口没了"还是"我路径写错了"。
 
 ### 全局闸门（重要）
 
-`/api/player`、`/api/player/card`、`/api/tags`、`/api/card.png` 这几个**会真的访问外部服务**，
+`/api/player`、`/api/player/card`、`/api/tags` 这几个**会真的访问外部服务**，
 除了每 Key 120/分钟（**按响应体积加权**，见[额度](#额度)），还有一道**全局闸门**：**合计每分钟最多 90 次**（`429` 表示超了）。
 本地接口（`/api/denick`、`/api/search`、`/api/recent`、`/api/nick-history`）不受这道闸门限制。
 
@@ -999,7 +1000,10 @@ req = urllib.request.Request(url, headers={"User-Agent": "my-app/1.0"})
 
 | 日期 | 变更 |
 |---|---|
-| 2026-09-25 | **额度按响应体积加权**：不再"一次请求扣 1"，而是普通响应扣 **1**、> 1 MB 扣 **4**（1+3）、> 5 MB 扣 **8**（1+7）；`MB` 按十进制算，边界**严格大于**。起因是反代能打到 `/v2/resources/skyblock/items` 这种 **5 MB** 的响应，而查一次 `/v2/status` 只有 85 字节 —— 按次数一刀切对别人不公平。每次响应带 **`X-Quota-Cost`** 头，调用方一眼看到这次花了多少。**「频率限制」统一改称「额度」**（`/apikey rate` 的文案、帮助、`/apikey list`/`status` 的显示都跟着改；`per_min`、`rate_limited` 这些**接口字段名没动**，老调用方不受影响） |
+| 2026-09-25 | **仓库改名 `bsk-denick-api` → `bsk-hypixel-api`**：老名字只体现了两个服务里的第一个（denick 反查），容易让人以为这里没有 Hypixel 反代。旧地址自动跳转，另在旧名下留了一个占位仓库写明已迁移 |
+| 2026-09-25 | **`/api/card.png` 下线**（返回 `410 gone`）：没人用，而且每次都要**真的渲染一张 PNG**（几十 MB 内存 + CPU），纯浪费算力。想要卡片图请用群里的 `/hyp <名字>`，或改用 `/api/player/card` 拿 JSON 自己渲染 —— 那个不出图，快得多 |
+| 2026-09-25 | **反代出错也保持 Hypixel 的形状**：以前额度用完时反代会回我们自己的 `{"ok":false,"error":"rate_limited"}` —— 可反代的卖点是"只改 base url 就能用"，调用方只认官方的 `{success, cause}`，突然冒出个自定义结构会让解析代码炸掉，还会被误以为 Hypixel 改了接口。现在额度用完 / Key 无效 / 上游失败一律回 `{"success":false,"cause":"..."}`（配 429 / 401 / 502） |
+| 2026-09-25 | **额度按响应体积加权**：不再"一次请求扣 1"，而是普通响应扣 **1**、> 3 MB 扣 **7**（1+6）、> 5 MB 扣 **15**（1+14）；`MB` 按十进制算，边界**严格大于**。起因是反代能打到 `/v2/resources/skyblock/items` 这种 **5 MB** 的响应，而查一次 `/v2/status` 只有 85 字节 —— 按次数一刀切对别人不公平。每次响应带 **`X-Quota-Cost`** 头，调用方一眼看到这次花了多少。**「频率限制」统一改称「额度」**（`/apikey rate` 的文案、帮助、`/apikey list`/`status` 的显示都跟着改；`per_min`、`rate_limited` 这些**接口字段名没动**，老调用方不受影响） |
 | 2026-09-25 | **反代失败一律换 Key 重试**：429 / 401 / 403 / 5xx / 404 / 超时 / 连接重置 —— **任何失败都换一把 Key 再试**（以前只对 401/403/429）。最多 **3 次**（第一次 + 换 2 次），仍失败则**原样返回**最后一次的响应（是 429 就回 429，body 与 Hypixel 的真实内容一致）；全是网络错误则回 502。目的是尽量把成功的数据交给调用方 —— 换 Key 成本很低，而猜"哪种错值得重试"只会漏掉真实情况。**注意**：网络错误不会隔离 Key，所以内部必须显式挑一把没试过的（`_pick_untried`），否则 `pool_pick` 会一直返回同一把，"重试"变成原地打转 |
 | 2026-09-25 | **新增 Hypixel 官方接口反代 `hyp-api.firebounce.today`**：把 base url 从 `api.hypixel.net` 换成它就完事 —— 路径、参数、返回的 JSON **字节级原样透传**（实测 `/v2/player`、`/v2/status`、`/v2/guild` 与官方逐字节相同，连错误响应也一样）。Key 用本站 `/apikey` 申请的 `bsk_` Key（三种传法都认），背后是**多把 Hypixel Key 组成的池子**：额度按把叠加（每把 300/分钟），一把被拒自动换下一把、连续 5 次才自动退场。`ratelimit-*` 头照原样透传。**故意不接受**用真 Hypixel Key 转发 —— 那会让这个域名变成开放代理，别人可借它隐藏来源、白嫖额度；所以其它 Key 一律 `401 invalid_key`。另：该域名开了 Cloudflare Browser Integrity Check，**`python-urllib` 的默认 UA 会被 CF 挡（`403 error 1010`，请求到不了源站）** —— 浏览器/curl/requests 都自带 UA 不受影响，裸用 urllib 时设一下 `User-Agent` 即可 |
 | 2026-09-25 | **版本号改成日期制**：新增 `/api/denick/v1-260925` 这种**钉死某一版**的写法（`YYMMDD` = 发布日），以后改接口它**不动**。原因是 `v1` 是个**会动**的浮标 —— 接口一改，用它的人会**无声地**跟着变。`/api/denick/v1` 继续可用且**含义不变**（= 最新的 v1，现在和 `v1-260925` 返回同一个东西），老文档/老脚本一个字都不用改。三条规则：先比大版本号（`v2` > 所有 `v1`），再比日期；**已发布过的日期版一直认**（`v1-250101` 照样能调），只有**未来**日期才拒（免得写错一位数字却以为调到了新接口）；版本号**写错时明确 404 unknown_version**，不再被当成端点名去查（以前 `/api/denick/v1-2609` 会回一句莫名其妙的"没有这个端点: denick/v1-2609"）。`/api` 清单里每个端点同时给 `versioned` 和 `alias` 两个地址 |

@@ -4,7 +4,15 @@
 
 ## 两个服务（别搞混）
 
-本仓库叫 bsk-denick-api，但它同时承载**两个**对外服务。名字只体现了第一个。
+本仓库叫 **bsk-hypixel-api**，承载**两个**对外服务：
+
+1. **denick 查询** —— 本站自有的昵称反查 / 资料聚合接口；
+2. **Hypixel 官方 API 反代** —— 把 `api.hypixel.net` 原样镜像过来的入口。
+
+名字里的 "hypixel" 两个都沾边，但**两者的接口格式完全不同**，别照抄：
+
+- 服务 1 用下面写的 `{ok, data}` 格式；
+- 服务 2 **就是 Hypixel 官方格式**，端点和字段一律以 Hypixel 官方文档为准。
 
 ### 1. denick 查询 API（本站自有接口）
 
@@ -39,7 +47,14 @@ curl -H "API-Key: bsk_你的key" \
 ```
 
 支持的端点: 所有 `/v2/*`（`/v2/player`、`/v2/status`、`/v2/recentgames`、
-`/v2/guild` …）。认证头三种都认: `API-Key` / `Authorization: Bearer` / `?key=`。
-`ratelimit-*` 响应头照原样透传。
+`/v2/guild`、`/v2/resources/*` …）。认证头三种都认: `API-Key` /
+`Authorization: Bearer` / `?key=`。`ratelimit-*` 响应头照原样透传。
 
 失败时最多换 2 次 Key 重试（共 3 次），仍失败则**原样返回** Hypixel 的错误响应。
+**出错时也是 Hypixel 的形状**（`{"success":false,"cause":"..."}`）—— 所以只认
+官方格式的解析代码不会炸。
+
+**额度按响应体积加权**（本站计费，不是 Hypixel 的额度）：普通响应扣 1，
+> 3 MB 扣 7，> 5 MB 扣 15。每次响应带 `X-Quota-Cost` 头告诉你这次花了多少。
+`/v2/resources/skyblock/items` 有 ~5 MB（一次扣 15）—— 这类静态资源**请本地缓存**。
+额度用完返回 `429 {"success":false,"cause":"..."}`。

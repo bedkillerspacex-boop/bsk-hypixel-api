@@ -15,7 +15,7 @@ BSK 公共查询 API —— **全端点**演示（只用标准库，无第三方
     2  GET /api/player                身份 + 战绩 + 可疑度 + 标签 + 地区 + 延迟
     3  GET /api/tags                  只要标签 + 可疑度分(轻量)
     4  GET /api/player/card           整张卡的内容(JSON, 不出图)
-    5  GET /api/card.png              直接出图(PNG)
+    5  GET /api/card.png              已下线(410), 用于验证; 要图用 /hyp 或 /api/player/card
     6  GET /api/search                昵称/真名模糊搜索
     7  GET /api/recent                最近记录到的昵称(轮询用)
     8  GET /web/api/token             网站短期令牌 -> 拿它再查 /api/...
@@ -26,7 +26,7 @@ BSK 公共查询 API —— **全端点**演示（只用标准库，无第三方
     X-API-Key: bsk_xxx
     ?key=bsk_xxx
 
-文档: https://github.com/bedkillerspacex-boop/bsk-denick-api
+文档: https://github.com/bedkillerspacex-boop/bsk-hypixel-api
 申请 Key: 在 QQ 群里发  /apikey 你的QQ号  (机器人发不出私聊, Key 走你的 QQ 邮箱)
 """
 from __future__ import annotations
@@ -180,16 +180,13 @@ def main(argv):
     else:
         show(st, d)
 
-    step(5, "GET /api/card.png —— 直接出图")
+    step(5, "GET /api/card.png —— **已下线**(应该回 410)")
     st, h, body = call("/api/card.png", {"name": target}, base=base, raw=True)
-    if st == 200 and body[:4] == b"\x89PNG":
-        fn = "card_%s.png" % target
-        with open(fn, "wb") as f:
-            f.write(body)
-        print("    HTTP 200  PNG %d 字节 -> %s   (X-Card-Age=%s)"
-              % (len(body), fn, h.get("X-Card-Age")))
+    if st == 410:
+        print("    HTTP 410 —— 如预期, 这个接口没用了")
+        print("    (想要图: 群里发 /hyp <名字>; 想自己渲染: /api/player/card 拿 JSON)")
     else:
-        print("    HTTP %s  %s" % (st, body[:120]))
+        print("    ⚠️ 预期 410, 实际 HTTP %s  %s" % (st, body[:100]))
 
     step(6, "GET /api/search?q=bsk —— 模糊搜索(本地索引, 很快)")
     st, _, d = call("/api/search", {"q": "bsk", "limit": 5}, base=base)
