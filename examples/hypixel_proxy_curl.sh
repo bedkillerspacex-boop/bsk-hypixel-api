@@ -38,7 +38,18 @@ curl -s -D - -o /dev/null -H "API-Key: $BSK_KEY" "$BASE/v2/status?uuid=$UUID" \
   | grep -i 'ratelimit'
 echo
 
-echo "== ⑤ Authorization 传法也能用 =="
+echo "== ⑤ 看 X-Quota-Cost (本站按**响应体积**加权扣额度) =="
+echo "   普通响应扣 1; >1MB 扣 4; >5MB 扣 8"
+printf "   /v2/status              -> "
+curl -s -D - -o /dev/null -H "API-Key: $BSK_KEY" "$BASE/v2/status?uuid=$UUID" \
+  | grep -i 'x-quota-cost' | tr -d '\r'
+printf "   skyblock/collections    -> "
+curl -s -D - -o /dev/null -H "API-Key: $BSK_KEY" "$BASE/v2/resources/skyblock/collections" \
+  | grep -i 'x-quota-cost' | tr -d '\r'
+echo "   (skyblock/items 有 5MB, 扣 8 —— 这类静态资源请本地缓存)"
+echo
+
+echo "== ⑥ Authorization 传法也能用 =="
 curl -s -o /dev/null -w 'HTTP %{http_code}\n' \
   -H "Authorization: Bearer $BSK_KEY" "$BASE/v2/status?uuid=$UUID"
 

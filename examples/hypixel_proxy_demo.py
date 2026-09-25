@@ -73,6 +73,9 @@ def main():
     print("GET /v2/player -> HTTP %s" % st)
     # 限流头也是官方那套, 原样透传, 可以据此自己限速
     print("  ratelimit-remaining:", hdr.get("Ratelimit-Remaining"))
+    # ★ 本站计费: 一次请求扣多少额度是**按响应体积**加权的
+    #   (普通 1; >1MB 扣 4; >5MB 扣 8)。X-Quota-Cost 告诉你这次花了多少。
+    print("  X-Quota-Cost:", hdr.get("X-Quota-Cost"))
     if st == 200:
         d = json.loads(body)
         pl = d.get("player") or {}
@@ -97,6 +100,14 @@ def main():
     if st3 == 200:
         g = (json.loads(body3).get("guild") or {})
         print("  guild:", g.get("name"), "/", g.get("tag"))
+
+    # ---- ④ 大响应: 额度按体积加权 ----
+    #   /v2/resources/skyblock/items 有 ~5 MB, 扣 8 (普通请求只扣 1)。
+    #   这类 resources 是**静态资源**(几天才更新), 反复用请本地缓存。
+    st4, body4, hdr4 = call("/v2/resources/skyblock/collections", {}, key)
+    print("\nGET /v2/resources/skyblock/collections -> HTTP %s (%d 字节)"
+          % (st4, len(body4)))
+    print("  X-Quota-Cost:", hdr4.get("X-Quota-Cost"), "(普通大小, 扣 1)")
 
     print("\n把 BASE 换成 https://api.hypixel.net 并改用你自己的 Hypixel Key,")
     print("上面每一行输出都应当完全一致 —— 这就是\"原样透传\"的意思。")
