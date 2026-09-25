@@ -52,9 +52,10 @@ curl -H "API-Key: bsk_你的key" \
 
 失败时最多换 2 次 Key 重试（共 3 次），仍失败则**原样返回** Hypixel 的错误响应。
 **出错时也是 Hypixel 的形状**（`{"success":false,"cause":"..."}`）—— 所以只认
-官方格式的解析代码不会炸。
+官方格式的解析代码不会炸。但 `cause` 是英文的，且会**点名是反代这一侧的额度**
+（官方那句 `"Key throttle"` 会让人误以为自己的 Hypixel Key 被限流）。
 
 **额度按响应体积加权**（本站计费，不是 Hypixel 的额度）：普通响应扣 1，
 > 3 MB 扣 7，> 5 MB 扣 15。每次响应带 `X-Quota-Cost` 头告诉你这次花了多少。
 `/v2/resources/skyblock/items` 有 ~5 MB（一次扣 15）—— 这类静态资源**请本地缓存**。
-额度用完返回 `429 {"success":false,"cause":"..."}`。
+额度用完返回 `429`，`cause` 里写明了是反代的额度、怎么等、怎么提额。

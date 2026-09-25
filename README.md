@@ -926,6 +926,29 @@ Hypixel 说话，不用改任何解析代码。
 | 认证方式 | `API-Key: <key>` | `Authorization: Bearer <key>` / `?key=` / `X-API-Key` |
 | 限流头 | `ratelimit-*` | **同样透传**，可据此自己限速 |
 
+### 出错时的响应
+
+**形状和官方一致**（`{success, cause}`），所以只认官方格式的解析代码不会炸。
+但 `cause` 是**英文**的，而且会**明确点名"这是反代这一侧的额度"**：
+
+```json
+{
+  "success": false,
+  "cause": "Quota exceeded on the hyp-api.firebounce.today reverse-proxy (this is the proxy's request quota, not your Hypixel API key). Wait about a minute and retry, or ask the operator to raise the limit via '/apikey rate'. Large responses cost more quota: see the X-Quota-Cost response header."
+}
+```
+
+> ⚠️ **为什么要点名**：官方那句是 `{"success":false,"cause":"Key throttle"}` ——
+> 照抄的话，你会以为**自己的 Hypixel Key** 被限流了，跑去 Hypixel 后台查半天，
+> 方向完全错。实际是我们这一侧的额度到了。
+
+| 情况 | 状态码 |
+|---|---|
+| 本站额度用完 | `429` |
+| 全站闸门繁忙 | `429` |
+| Key 无效 / 没带 / 被停用 | `401` |
+| 上游失败（重试 3 次仍不行） | `502` |
+
 三个认证方式**任选其一**即可：
 
 ```bash
@@ -1000,6 +1023,7 @@ req = urllib.request.Request(url, headers={"User-Agent": "my-app/1.0"})
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-25 | **反代出错的 `cause` 改成英文 + 点名是"反代的额度"**：以前额度用完回的是中文 `"请求过于频繁, 请稍后再试"` —— 那是**给群消息用的文案**，放在接口响应里不合适（调用方可能是任何语言的程序），而且没说是谁的额度。现在 `cause` 一律英文，并明确写出 `Quota exceeded on the hyp-api.firebounce.today reverse-proxy (this is the proxy's request quota, not your Hypixel API key)` 外加怎么办（等一会儿重试 / `/apikey rate` 提额 / 大响应有 `X-Quota-Cost`）。**不照抄官方那句 `"Key throttle"`** —— 那会让人误以为是自己的 Hypixel Key 被限流，跑去 Hypixel 后台查，方向全错 |
 | 2026-09-25 | **仓库改名 `bsk-denick-api` → `bsk-hypixel-api`**：老名字只体现了两个服务里的第一个（denick 反查），容易让人以为这里没有 Hypixel 反代。旧地址自动跳转，另在旧名下留了一个占位仓库写明已迁移 |
 | 2026-09-25 | **`/api/card.png` 下线**（返回 `410 gone`）：没人用，而且每次都要**真的渲染一张 PNG**（几十 MB 内存 + CPU），纯浪费算力。想要卡片图请用群里的 `/hyp <名字>`，或改用 `/api/player/card` 拿 JSON 自己渲染 —— 那个不出图，快得多 |
 | 2026-09-25 | **反代出错也保持 Hypixel 的形状**：以前额度用完时反代会回我们自己的 `{"ok":false,"error":"rate_limited"}` —— 可反代的卖点是"只改 base url 就能用"，调用方只认官方的 `{success, cause}`，突然冒出个自定义结构会让解析代码炸掉，还会被误以为 Hypixel 改了接口。现在额度用完 / Key 无效 / 上游失败一律回 `{"success":false,"cause":"..."}`（配 429 / 401 / 502） |
