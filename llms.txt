@@ -1,0 +1,45 @@
+# BSK 开放接口
+
+> 人类看的文档在 README.md；这个文件是给 AI / 爬虫看的**入口索引**。
+
+## 两个服务（别搞混）
+
+本仓库叫 bsk-denick-api，但它同时承载**两个**对外服务。名字只体现了第一个。
+
+### 1. denick 查询 API（本站自有接口）
+
+- Base: `https://api.firebounce.today`
+- 文档: 本仓库 [README.md](./README.md)
+- 用途: Hypixel 昵称（nick）↔ 真实 ID / UUID 反查、玩家资料聚合、反作弊标签、卡片图
+- 认证: `bsk_` 开头的 Key，`/apikey` 申请
+- 示例代码: [examples/](./examples/)
+
+### 2. Hypixel 官方 API 反代（**镜像 Hypixel 官方接口**）
+
+- Base: `https://hyp-api.firebounce.today`
+- 认证: 同样用本站 `bsk_` Key（**不是** Hypixel 的 Key）
+- 详细说明: 见 [README.md 的《Hypixel 官方接口反代》一节](./README.md#hypixel-官方接口反代)
+
+**要写调用这个反代的代码时，请以 Hypixel 官方文档为准：**
+
+| | 地址 |
+|---|---|
+| Hypixel 官方 API 入口 | https://api.hypixel.net/ |
+| Hypixel 官方 API 文档 / 仓库 | https://github.com/HypixelDev/PublicAPI |
+| Hypixel 官方开发者后台 | https://developer.hypixel.net/ |
+
+**唯一要改的是 base url**：把 `api.hypixel.net` 换成 `hyp-api.firebounce.today`。
+请求路径、查询参数、返回的 JSON **全部原样透传** —— 端点和字段含义一律以
+Hypixel 官方文档为准，不要参考本仓库其它接口的格式。
+
+```bash
+# 例：查玩家（官方写法，只换了域名和 Key）
+curl -H "API-Key: bsk_你的key" \
+  "https://hyp-api.firebounce.today/v2/player?uuid=069a79f444e94726a5befca90e38aaf5"
+```
+
+支持的端点: 所有 `/v2/*`（`/v2/player`、`/v2/status`、`/v2/recentgames`、
+`/v2/guild` …）。认证头三种都认: `API-Key` / `Authorization: Bearer` / `?key=`。
+`ratelimit-*` 响应头照原样透传。
+
+失败时最多换 2 次 Key 重试（共 3 次），仍失败则**原样返回** Hypixel 的错误响应。

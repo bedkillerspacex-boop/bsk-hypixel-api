@@ -1,5 +1,14 @@
 # BSK denick 查询 API
 
+> 📌 **这个仓库里有两个服务**（仓库名只体现了第一个）：
+>
+> | 服务 | Base | 说明 |
+> |---|---|---|
+> | **denick 查询** | `https://api.firebounce.today` | 本站自有接口，见本文档 |
+> | **Hypixel 官方 API 反代** | `https://hyp-api.firebounce.today` | **镜像 Hypixel 官方接口**，[官方文档](https://github.com/HypixelDev/PublicAPI)，见[这一节](#hypixel-官方接口反代) |
+>
+> 给 AI / 爬虫的入口索引另见 [`llms.txt`](./llms.txt)。
+
 把 **Hypixel 昵称（nick）** 反查成 **真实玩家 ID**。
 
 ```
@@ -16,7 +25,8 @@ Endpoint:  GET / POST  /api/denick          昵称 -> 真名/UUID
            GET         /api/nick-history    某个昵称的完整出现历史
 
 反代:      https://hyp-api.firebounce.today/v2/...   Hypixel 官方接口原样透传
-           (只把 base url 换掉就能用, 见 [Hypixel 官方接口反代](#hypixel-官方接口反代))
+           (只把 base url 换掉就能用; 端点和字段**以 Hypixel 官方文档为准**:
+            https://github.com/HypixelDev/PublicAPI)
 ```
 
 > **不是 Hypixel 官方数据**，可能过期或有错。**同名 ≠ 同一人**是常态，见文末 [注意事项](#注意事项重要)。
@@ -850,6 +860,23 @@ GET /api/card.png?name=<名字>
 ---
 
 ## Hypixel 官方接口反代
+
+> **这是 Hypixel 官方 API 的镜像入口 —— 你不需要看我们自己的接口文档。**
+>
+> 要调这个反代，请**按 Hypixel 官方文档写代码**：
+>
+> | | 地址 |
+> |---|---|
+> | 官方 API 入口 | https://api.hypixel.net/ |
+> | 官方 API 文档与仓库 | https://github.com/HypixelDev/PublicAPI |
+> | 官方开发者后台（申请真 Key） | https://developer.hypixel.net/ |
+>
+> **你唯一要改的就是 base url**：把 `api.hypixel.net` 换成
+> `hyp-api.firebounce.today`，路径 / 参数 / 返回的 JSON **一模一样**。
+> Key 用本站的 `bsk_` Key（`/apikey` 申请），不用 Hypixel 的 Key。
+>
+> 所以：**端点列表、字段含义、参数写法，一律以 Hypixel 官方文档为准** ——
+> 下面只讲"和官方的差别"，不重复抄一遍官方的接口说明（抄了会过期，也会误导）。
 
 **把 base url 换掉就能用**，其它一行都不用改：
 

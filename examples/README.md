@@ -1,10 +1,39 @@
-# denick API 示例代码
+# 示例代码
+
+这个仓库有**两个**服务，示例也分两组：
+
+| 服务 | Base | 示例 |
+|---|---|---|
+| **denick 查询**（本站自有接口） | `https://api.firebounce.today` | `denick_*.{sh,py,js}` |
+| **Hypixel 官方 API 反代** | `https://hyp-api.firebounce.today` | [`hypixel_proxy_demo.py`](hypixel_proxy_demo.py) / [`hypixel_proxy_curl.sh`](hypixel_proxy_curl.sh) |
+
+> ⚠️ **写反代的调用代码时，请以 Hypixel 官方文档为准**，不要照抄 denick 的格式：
+> https://github.com/HypixelDev/PublicAPI · https://api.hypixel.net/
+> 我们只换了 base url，端点和返回的 JSON 与官方**完全一致**。
+
+---
+
+# denick 查询 API 示例代码
 
 | 文件 | 语言 | 说明 |
 |---|---|---|
 | [`denick_curl.sh`](denick_curl.sh) | Bash | curl：三种鉴权 + POST + jq 提取 + 状态码 |
 | [`denick_client.py`](denick_client.py) | Python 3 | 标准库实现，**无第三方依赖**；含 429 退避重试、`--json`、`track_player()` |
 | [`denick_client.js`](denick_client.js) | Node 18+ | 原生 fetch，同样带退避重试 / `--json` / `trackPlayer()` |
+
+# Hypixel 反代示例代码
+
+| 文件 | 语言 | 说明 |
+|---|---|---|
+| [`hypixel_proxy_demo.py`](hypixel_proxy_demo.py) | Python 3 | `/v2/player`、`/v2/status`、`/v2/guild`，读出限流头，演示"只改 base url" |
+| [`hypixel_proxy_curl.sh`](hypixel_proxy_curl.sh) | Bash | 同样几个端点 + 限流头 + 另一种鉴权传法 |
+
+```bash
+export BSK_KEY="bsk_你的key"
+python3 hypixel_proxy_demo.py                 # 默认一个有战绩的玩家
+python3 hypixel_proxy_demo.py <uuid>
+bash hypixel_proxy_curl.sh
+```
 
 ## 跑之前
 
