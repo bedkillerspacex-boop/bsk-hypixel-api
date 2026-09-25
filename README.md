@@ -14,6 +14,9 @@ Endpoint:  GET / POST  /api/denick          昵称 -> 真名/UUID
            GET         /api/search          昵称/真名模糊搜索(本地)
            GET         /api/recent          最近记录到的昵称(轮询)
            GET         /api/nick-history    某个昵称的完整出现历史
+
+反代:      https://hypapi.firebounce.today/v2/...   Hypixel 官方接口原样透传
+           (只把 base url 换掉就能用, 见 [Hypixel 官方接口反代](#hypixel-官方接口反代))
 ```
 
 > **不是 Hypixel 官方数据**，可能过期或有错。**同名 ≠ 同一人**是常态，见文末 [注意事项](#注意事项重要)。
@@ -32,6 +35,7 @@ Endpoint:  GET / POST  /api/denick          昵称 -> 真名/UUID
 - [玩家资料聚合 `/api/player`](#玩家资料聚合-apiplayer)
 - [卡片内容 `/api/player/card`](#卡片内容-apiplayercard)
 - [其它接口](#其它接口)
+- [Hypixel 官方接口反代](#hypixel-官方接口反代)
 - [注意事项](#注意事项重要)
 
 ---
@@ -845,6 +849,84 @@ GET /api/card.png?name=<名字>
 
 ---
 
+## Hypixel 官方接口反代
+
+**把 base url 换掉就能用**，其它一行都不用改：
+
+```diff
+- https://api.hypixel.net/v2/player?uuid=<uuid>          (Header: API-Key: <Hypixel 的 Key>)
++ https://hypapi.firebounce.today/v2/player?uuid=<uuid>  (Header: API-Key: <你的 bsk_ Key>)
+```
+
+路径、查询参数、返回的 JSON **全都是原样透传**的 —— 你的客户端仍然以为自己在跟
+Hypixel 说话，不用改任何解析代码。
+
+### 和官方有什么区别
+
+| | 官方 `api.hypixel.net` | 这个反代 |
+|---|---|---|
+| Key | Hypixel 的 Key | **本站 `/apikey` 申请的那把**（`bsk_` 开头） |
+| 额度 | 一把 300 次/分钟 | **多把池子叠加**，一把失效自动换下一把 |
+| 认证方式 | `API-Key: <key>` | `Authorization: Bearer <key>` / `?key=` / `X-API-Key` |
+| 限流头 | `ratelimit-*` | **同样透传**，可据此自己限速 |
+
+三个认证方式**任选其一**即可：
+
+```bash
+# ① 请求头 (推荐, Key 不会进 URL 日志)
+curl -H "API-Key: bsk_你的key" \
+  "https://hypapi.firebounce.today/v2/player?uuid=069a79f444e94726a5befca90e38aaf5"
+
+# ② Authorization
+curl -H "Authorization: Bearer bsk_你的key" \
+  "https://hypapi.firebounce.today/v2/player?uuid=069a79f444e94726a5befca90e38aaf5"
+
+# ③ URL 参数
+curl "https://hypapi.firebounce.today/v2/player?uuid=069a79f444e94726a5befca90e38aaf5&key=bsk_你的key"
+```
+
+```python
+import requests
+
+r = requests.get(
+    "https://hypapi.firebounce.today/v2/player",
+    params={"uuid": "069a79f444e94726a5befca90e38aaf5"},
+    headers={"API-Key": "bsk_你的key"},
+)
+print(r.json()["player"]["displayname"])
+```
+
+### 覆盖范围
+
+**所有 `/v2/*` 端点**都转发，不限于下面这几个常用例子：
+
+| 路径 | 说明 |
+|---|---|
+| `/v2/player?uuid=` | 玩家完整数据 |
+| `/v2/status?uuid=` | 在线状态 |
+| `/v2/recentgames?uuid=` | 最近对局 |
+| `/v2/guild?player=` | 公会 |
+
+### 为什么不能拿真 Hypixel Key 来用
+
+**故意的。** 如果这里接受别人自己的 Hypixel Key，这个域名就成了**开放代理** ——
+任何人都能借它隐藏真实来源、并白嫖我们 Key 池的额度。所以**只认本站 `bsk_` Key**，
+其它一律 `401 invalid_key`。
+
+### 一个已知情况：Cloudflare 会挡特定 User-Agent
+
+这个域名在 Cloudflare 后面并开启了 Browser Integrity Check，**`python-urllib`
+的默认 UA 会被挡，返回 `403 error code: 1010`**（请求根本没到我们这边）。
+
+浏览器、`curl`、`requests`、各种 SDK 都自带 UA，**不受影响**。只有裸用 Python
+`urllib` 且不设 UA 的脚本会撞上 —— 那时随便设一个 `User-Agent` 头即可：
+
+```python
+req = urllib.request.Request(url, headers={"User-Agent": "my-app/1.0"})
+```
+
+---
+
 ## 注意事项（重要）
 
 1. **同名 ≠ 同一人。** 实测 `theoshadow` 本身就存在一个正版账号（`THEOshadow`），
@@ -862,6 +944,7 @@ GET /api/card.png?name=<名字>
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-25 | **新增 Hypixel 官方接口反代 `hypapi.firebounce.today`**：把 base url 从 `api.hypixel.net` 换成它就完事 —— 路径、参数、返回的 JSON **字节级原样透传**（实测 `/v2/player`、`/v2/status`、`/v2/guild` 与官方逐字节相同，连错误响应也一样）。Key 用本站 `/apikey` 申请的 `bsk_` Key（三种传法都认），背后是**多把 Hypixel Key 组成的池子**：额度按把叠加（每把 300/分钟），一把被拒自动换下一把、连续 5 次才自动退场。`ratelimit-*` 头照原样透传。**故意不接受**用真 Hypixel Key 转发 —— 那会让这个域名变成开放代理，别人可借它隐藏来源、白嫖额度；所以其它 Key 一律 `401 invalid_key`。另：该域名开了 Cloudflare Browser Integrity Check，**`python-urllib` 的默认 UA 会被 CF 挡（`403 error 1010`，请求到不了源站）** —— 浏览器/curl/requests 都自带 UA 不受影响，裸用 urllib 时设一下 `User-Agent` 即可 |
 | 2026-09-25 | **版本号改成日期制**：新增 `/api/denick/v1-260925` 这种**钉死某一版**的写法（`YYMMDD` = 发布日），以后改接口它**不动**。原因是 `v1` 是个**会动**的浮标 —— 接口一改，用它的人会**无声地**跟着变。`/api/denick/v1` 继续可用且**含义不变**（= 最新的 v1，现在和 `v1-260925` 返回同一个东西），老文档/老脚本一个字都不用改。三条规则：先比大版本号（`v2` > 所有 `v1`），再比日期；**已发布过的日期版一直认**（`v1-250101` 照样能调），只有**未来**日期才拒（免得写错一位数字却以为调到了新接口）；版本号**写错时明确 404 unknown_version**，不再被当成端点名去查（以前 `/api/denick/v1-2609` 会回一句莫名其妙的"没有这个端点: denick/v1-2609"）。`/api` 清单里每个端点同时给 `versioned` 和 `alias` 两个地址 |
 | 2026-09-24 | **修 `/apikey status <QQ号>` 读不到任何信息**：老代码**把参数静默丢掉**，拿发送者自己的 openid 去查，回一句"你还没申请过" —— 一个字节的信息都没有。而且对**已经有 Key 的人**也回这一句（因为只查"申请记录"，不看"你已经有一把 Key 了"）。现在 `/apikey status` 不带参数看自己（有 Key 就直接报掩码），带参数按 **QQ号 / openid / Key / 掩码 / 申请编号** 查那个人，一次列全 Key、申请、实际额度和异常提示；查不到会**说明为什么**。顺带补上根因：平台只给 openid，所以新增 **openid ↔ QQ 对照表**（`denick_people.json`，只在**邮箱验证码通过**或管理员 `/apikey bind` 时写入）—— 之前按 QQ 号配的限速**永远不生效**（Key 记录里根本没有 QQ 字段），现在 `/apikey bind` 后立即生效，并且 `/apikey rate`、`/apikey list`、`/apikey status` 都会把**"配了但匹配不到 Key、实际不生效"的覆盖显式列出来**。一个 QQ 号只能属于一个人，抢绑直接拒绝并提示先 `unbind`。另：指令现在会记日志（谁 / 哪个来源 / 参数，Key 已打码），这类"参数被吞"的问题不用再靠猜 |
 | 2026-09-24 | **延迟推地区改成「分布」**：`ping_region` 从 `"亚洲·大洋洲(大致)"` 这种一个词，改成带**实测占比**的 `"亚洲 41% / 大洋洲 29%(大致)"`，并新增结构化的 **`region_guess`**（`[{"region","pct"}]`，省得解析字串）。占比是那 41 个干净样本上的**实测分布**，只列 ≥20% 的地区，而且**故意不归一到 100%** —— 归一会把 `≥165ms` 里那 18% 的非洲藏掉，读起来像"只可能是亚洲或大洋洲"。`(大致)` 后缀保留 |
