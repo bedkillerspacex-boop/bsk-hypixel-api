@@ -1009,16 +1009,51 @@ r = requests.get(
 print(r.json()["player"]["displayname"])
 ```
 
-### 覆盖范围
+### 覆盖范围：官方全部 30 个端点
 
-**所有 `/v2/*` 端点**都转发，不限于下面这几个常用例子：
+**官方 v2 的每一个端点都转发** —— 我们不做白名单，所以官方文档里有什么这里就有
+什么。[官方文档](https://github.com/HypixelDev/PublicAPI)。
 
-| 路径 | 说明 |
-|---|---|
-| `/v2/player?uuid=` | 玩家完整数据 |
-| `/v2/status?uuid=` | 在线状态 |
-| `/v2/recentgames?uuid=` | 最近对局 |
-| `/v2/guild?player=` | 公会 |
+下面是**实测过**的清单（2026-09-25 全量跑过一遍，都通）：
+
+| 端点 | 参数 | 实测大小 | 说明 |
+|---|---|---|---|
+| `/v2/player` | `uuid` | 24 KB | 玩家完整数据（各游戏 stats） |
+| `/v2/status` | `uuid` | 85 B | 在线状态 |
+| `/v2/recentgames` | `uuid` | 69 B | 最近对局 |
+| `/v2/guild` | `player` / `id` / `name` | 29 B～ | 公会 |
+| `/v2/counts` | — | 4 KB | 各游戏当前在线人数 |
+| `/v2/leaderboards` | — | **389 KB** | 各榜前列玩家 |
+| `/v2/boosters` | — | 67 B | 当前网络 booster |
+| `/v2/punishmentstats` | — | 142 B | 处罚统计 |
+| `/v2/resources/achievements` | — | **434 KB** | 成就表 |
+| `/v2/resources/challenges` | — | 14 KB | 挑战表 |
+| `/v2/resources/games` | — | 7.7 KB | 游戏信息 |
+| `/v2/resources/quests` | — | 49 KB | 任务表 |
+| `/v2/resources/guilds/achievements` | — | 1 KB | 公会成就 |
+| `/v2/resources/vanity/companions` | — | 1.9 KB | 伙伴（宠物外观） |
+| `/v2/resources/vanity/pets` | — | 15 KB | 宠物表 |
+| `/v2/resources/skyblock/collections` | — | 83 KB | SkyBlock 收集 |
+| `/v2/resources/skyblock/skills` | — | 117 KB | SkyBlock 技能 |
+| `/v2/resources/skyblock/items` | — | **5.07 MB** | SkyBlock 物品表 ⚠️ 扣 15 |
+| `/v2/resources/skyblock/election` | — | 2.5 KB | 市长选举 |
+| `/v2/resources/skyblock/bingo` | — | 4.9 KB | Bingo 目标 |
+| `/v2/skyblock/news` | — | 1.2 KB | SkyBlock 新闻 |
+| `/v2/skyblock/bazaar` | — | **3.6 MB** | 集市价格 ⚠️ 扣 7 |
+| `/v2/skyblock/auctions` | `page` | **2.4 MB** | 活跃拍卖（分页）⚠️ 扣 7 |
+| `/v2/skyblock/auctions_ended` | — | 147 KB | 刚结束的拍卖 |
+| `/v2/skyblock/firesales` | — | 27 B | 限时抢购 |
+| `/v2/skyblock/profiles` | `uuid` | 12 KB | 玩家所有 SkyBlock 档案 |
+| `/v2/skyblock/profile` | `profile` | 12 KB | 单个档案（用 profile_id） |
+| `/v2/skyblock/museum` | `profile` | 29 B～ | 博物馆 |
+| `/v2/skyblock/bingo` | `uuid` | — | 玩家 Bingo 进度（没数据时 404） |
+| `/v2/skyblock/auction` | `uuid` | 2.3 KB | 单个拍卖详情 |
+
+> ⚠️ 标了大小的是**大响应** —— 会按[体积加权](#按响应体积加权)多扣额度。
+> `skyblock/items`（5 MB）和 `bazaar`（3.6 MB）这类**请本地缓存**，
+> 它们是静态/准静态数据，反复拉纯属浪费。
+>
+> 💡 响应头里的 **`X-Quota-Cost`** 会告诉你这次花了多少额度，不用自己算。
 
 ### 为什么不能拿真 Hypixel Key 来用
 
@@ -1057,6 +1092,7 @@ req = urllib.request.Request(url, headers={"User-Agent": "my-app/1.0"})
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-25 | **补全反代的端点清单**：《覆盖范围》从"四个常用例子"扩成**官方全部 30 个端点**的实测表（带参数、响应大小、备注）。起因：反代本来就转发所有 `/v2/*`，但文档只列了 4 个，用的人（和 AI）不知道别的能不能用 —— 于是把 30 个**全量跑了一遍**确认都通，并标出哪几个是大响应（`skyblock/items` 5 MB、`bazaar` 3.6 MB、`leaderboards` 389 KB…），提醒本地缓存 |
 | 2026-09-25 | **打了上游的接口改成扣 1.5**：`/api/player`、`/api/player/card`、`/api/tags` 每次要真的出网打 Hypixel / Urchin，一次扣 **1.5**；`/api/denick`、`/api/search`、`/api/recent`、`/api/nick-history` 纯本地查索引，仍是 1。为了支持小数，额度计数器从"记一条时间戳"改成**带权重**的形式（`(时间, 权重)`），判断超限按**总量**比 —— 所以 225 的额度能放 150 次 1.5，而不是凑整成 2 只能放 112 次。体积加权与它**叠加**：出网接口拉 5 MB 响应扣 15.5 |
 | 2026-09-25 | **反代出错的 `cause` 改成英文 + 点名是"反代的额度"**：以前额度用完回的是中文 `"请求过于频繁, 请稍后再试"` —— 那是**给群消息用的文案**，放在接口响应里不合适（调用方可能是任何语言的程序），而且没说是谁的额度。现在 `cause` 一律英文，并明确写出 `Quota exceeded on the hyp-api.firebounce.today reverse-proxy (this is the proxy's request quota, not your Hypixel API key)` 外加怎么办（等一会儿重试 / `/apikey rate` 提额 / 大响应有 `X-Quota-Cost`）。**不照抄官方那句 `"Key throttle"`** —— 那会让人误以为是自己的 Hypixel Key 被限流，跑去 Hypixel 后台查，方向全错 |
 | 2026-09-25 | **仓库改名 `bsk-denick-api` → `bsk-hypixel-api`**：老名字只体现了两个服务里的第一个（denick 反查），容易让人以为这里没有 Hypixel 反代。旧地址自动跳转，另在旧名下留了一个占位仓库写明已迁移 |

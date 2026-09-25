@@ -46,9 +46,16 @@ curl -H "API-Key: bsk_你的key" \
   "https://hyp-api.firebounce.today/v2/player?uuid=069a79f444e94726a5befca90e38aaf5"
 ```
 
-支持的端点: 所有 `/v2/*`（`/v2/player`、`/v2/status`、`/v2/recentgames`、
-`/v2/guild`、`/v2/resources/*` …）。认证头三种都认: `API-Key` /
-`Authorization: Bearer` / `?key=`。`ratelimit-*` 响应头照原样透传。
+支持的端点: **官方 v2 的全部 30 个**（不做白名单）—— `/v2/player`、
+`/v2/status`、`/v2/recentgames`、`/v2/guild`、`/v2/counts`、
+`/v2/leaderboards`、`/v2/boosters`、`/v2/punishmentstats`、
+`/v2/resources/*`（achievements / challenges / games / quests /
+vanity / skyblock …）、`/v2/skyblock/*`（profiles / profile / bazaar /
+auctions / auctions_ended / auction / museum / news / firesales / bingo）。
+参数与字段一律见 README 的《覆盖范围》表或官方文档。
+
+认证头三种都认: `API-Key` / `Authorization: Bearer` / `?key=`。
+`ratelimit-*` 响应头照原样透传。
 
 失败时最多换 2 次 Key 重试（共 3 次），仍失败则**原样返回** Hypixel 的错误响应。
 **出错时也是 Hypixel 的形状**（`{"success":false,"cause":"..."}`）—— 所以只认
