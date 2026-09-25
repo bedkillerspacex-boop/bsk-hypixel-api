@@ -23,6 +23,9 @@ Endpoint:  GET / POST  /api/denick          昵称 -> 真名/UUID
            GET         /api/search          昵称/真名模糊搜索(本地)
            GET         /api/recent          最近记录到的昵称(轮询)
            GET         /api/nick-history    某个昵称的完整出现历史
+           GET         /api/hypixel         Hypixel 官方接口反代(与下面那个同义)
+
+清单:      GET /api                     列出所有端点 + 版本 + 参数提示(机器可读)
 
 反代:      https://hyp-api.firebounce.today/v2/...   Hypixel 官方接口原样透传
            (只把 base url 换掉就能用; 端点和字段**以 Hypixel 官方文档为准**:
@@ -367,7 +370,13 @@ Authorization: Bearer <Key>
 
 ## 额度
 
-**每把 Key 默认 120 / 分钟**，超过返回 `429`。
+**每把 Key 默认 225 / 分钟**，超过返回 `429`。
+
+> ⚠️ **这个数字是"当前线上值"，不是固定出厂值** —— 管理员可以随时用
+> `/apikey rate default <次数>` 改（改完立刻生效，不用重启）。
+> 想知道**此刻**真正生效的数字，发 `/apikey rate`（列出全局默认 + 所有覆盖），
+> 或 `/apikey status <QQ号>` 看某个人实际拿到多少。
+> （代码里的出厂默认是 120，线上被调到了 225。）
 
 ### 按响应体积加权
 
@@ -401,14 +410,14 @@ curl -s -D - -o /dev/null -H "API-Key: bsk_你的key" \
 
 | 想改谁 | 命令 | 说明 |
 |---|---|---|
-| 全局默认 | `/apikey rate default 240` | 所有 Key 的默认值（原本 120） |
+| 全局默认 | `/apikey rate default 240` | 所有 Key 的默认值（**线上现值 225**，可随时改） |
 | 某一把 Key | `/apikey rate bsk_完整的key 600` | 贴完整 Key；也可以**直接复制** `/apikey list` 里的掩码（`bsk_a1b2…9f3c`） |
 | 某个 QQ 号 | `/apikey rate 123456789 300` | 认这个 QQ 号 —— **必须先 `/apikey bind` 过，否则不生效** |
 | 不限额度 | 填 `0` | 慎用 |
 | 删掉这条覆盖 | `/apikey rate bsk_xxx off` | 回到上一级（QQ 覆盖 → 全局默认） |
 | 看当前配置 | `/apikey rate` | 列出默认值 + 所有覆盖，并标出**匹配不到 Key、实际不生效**的那些 |
 
-优先级：**具体 Key > 该 Key 的 QQ 号 > 全局默认 > 环境变量 `QQBOT_DENICK_RATE`（120）**。
+优先级：**具体 Key > 该 Key 的 QQ 号 > 全局默认（现值 225）> 环境变量 `QQBOT_DENICK_RATE`（出厂 120）**。
 
 > ⚠️ **按 QQ 号配的覆盖只有在那个 QQ 已绑到某把 Key 上时才生效。**
 > 没绑就是白配 —— 命令会成功返回，但额度一点没变。`/apikey rate` 与 `/apikey list`
@@ -595,7 +604,7 @@ Authorization: Bearer <Key>
 
 ### 额度与闸门
 
-- 每把 Key **120 / 分钟**（跟 `/api/denick` 共用，且按**响应体积**加权扣，见[额度](#额度)）
+- 每把 Key **默认 225 / 分钟**（跟 `/api/denick` 共用，且按**响应体积**加权扣，见[额度](#额度)；数值以 `/apikey rate` 为准）
 - **额外**还有一道**全局限流**：该接口每分钟最多 **90 次**
   （因为它会真的访问 Hypixel/Urchin，得保护上游配额）→ 超了返回 `429`
 - 命中磁盘缓存时很快（毫秒级）；冷查询约 **1~3 秒**
@@ -756,7 +765,7 @@ Authorization: Bearer <Key>
 - 网站那条路（`/web/api/card`）在 nginx 上还有一层 **60 秒共享缓存**：
   命中时前端几乎瞬开（响应头 `X-Cache-Status: HIT`），根本不进 Python
 - 冷查询 **约 3~5 秒**（要等 Hypixel / Urchin / NameMC 上游）；热缓存 **<50ms**
-- 每 Key **120 / 分钟** + **全局闸门 90 / 分钟**（跟 `/api/player` 共用）；
+- 每 Key **默认 225 / 分钟** + **全局闸门 90 / 分钟**（跟 `/api/player` 共用）；
   命中缓存**不吃**这个额度 —— 那 120 是**真的上游取数**配额
 - 错误码同 [`/api/player`](#错误码-1)
 
@@ -770,7 +779,7 @@ GET /web/api/card?name=<名字 或 UUID 或 昵称>
 
 - **不需要你在浏览器里带 Key** —— Key 由服务器侧的 nginx 反向代理注入
   （`proxy_set_header Authorization "Bearer …"`），**访客永远看不到它**
-- 但服务端**照样要过 Key 校验**，所以那把"网站专用 Key"的额度（默认 120 / 分钟）对整站生效；
+- 但服务端**照样要过 Key 校验**，所以那把"网站专用 Key"的额度（现值 225 / 分钟）对整站生效；
   管理员可以用 `/apikey rate` 调它的额度
 - **面向访客的限速**是按 IP 做的：**7 秒间隔 + 每分钟 6 次**（跟机器人 `/hyp` 完全一致）
 - 只在服务器内部反代（`/web/api/`），不是给第三方用的接口
@@ -782,7 +791,7 @@ GET /web/api/card?name=<名字 或 UUID 或 昵称>
 ## 其它接口
 
 所有接口共用同一套 **API Key 鉴权**（`?key=` / `Authorization: Bearer` / `X-API-Key`）
-和每 Key **120 / 分钟**的限制。
+和每 Key 的每分钟额度限制（现值 225，见[额度](#额度)）。
 
 ### `/api/tags` —— 只要反作弊标签（最轻量）
 
@@ -883,7 +892,7 @@ GET /api/nick-history?nick=<昵称>&limit=200
 ### 全局闸门（重要）
 
 `/api/player`、`/api/player/card`、`/api/tags` 这几个**会真的访问外部服务**，
-除了每 Key 120/分钟（**按响应体积加权**，见[额度](#额度)），还有一道**全局闸门**：**合计每分钟最多 90 次**（`429` 表示超了）。
+除了每 Key 的额度（**现值 225 / 分钟，且按响应体积加权**，见[额度](#额度)），还有一道**全局闸门**：**合计每分钟最多 90 次**（`429` 表示超了）。
 本地接口（`/api/denick`、`/api/search`、`/api/recent`、`/api/nick-history`）不受这道闸门限制。
 
 ---
