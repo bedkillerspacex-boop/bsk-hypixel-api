@@ -1079,16 +1079,41 @@ curl -s 127.0.0.1:18096/health | python3 -m json.tool
 `/apikey rate` 下面，不另开指令：
 
 ```
-/apikey rate                        看全部限流配置（含并发上限 + 当前水位）
-/apikey rate concurrency 50         并发上限改成 50
-/apikey rate concurrency 0          不限（危险：线程无上限）
-/apikey rate concurrency off        删掉设定，回到环境变量 QQBOT_MAX_CONCURRENCY
+/apikey rate                              看全部限流配置（含并发 + 水位 + 谁在占着）
+/apikey rate concurrency 50               全站并发上限改成 50
+/apikey rate concurrency 0                全站不限（危险：线程无上限）
+/apikey rate concurrency default off      删掉全站设定，回到环境变量
+
+/apikey rate concurrency <Key|QQ> 5       给**这一个人**单独设 5
+/apikey rate concurrency <Key|QQ> off     删掉这个人的
 ```
 
 别名 `/apikey rate 并发 50`、`/apikey rate conc 50` 也认。
+**只带一个参数 = 全站，带两个 = 先是谁、再是值** —— 靠参数个数消歧，
+不然 QQ 号和并发数都是数字，分不出来。
 
-优先级：**群里设的 > 环境变量 `QQBOT_MAX_CONCURRENCY` > 代码默认 20**。
-群里设的会落盘到 `rate_limits.json`（跟额度配置同一个文件），重启后还在。
+### 为什么要"每人一档"
+
+全站那一档是**共享**的：一个调用方开 50 个并发就把 20 个槽位全占了，
+别人全部 429。全站档只能保护「进程别被打垮」，保护不了「谁也别把谁挤死」——
+后者得靠每人一档。
+
+优先级：**按 Key 覆盖 > 按 QQ 覆盖 > 全站设定 > 环境变量 `QQBOT_MAX_CONCURRENCY`
+> 代码默认 20**。
+
+| 写法 | 含义 |
+|---|---|
+| `/apikey rate concurrency bsk_xxxx…yyyy 5` | 这一把 Key 最多 5 个并发 |
+| `/apikey rate concurrency 3950591067 5` | 这个 QQ **名下所有** Key 最多 5 个并发 |
+| `/apikey rate concurrency 50` | 全站 50（没单独设过的人都跟着这个） |
+
+`0` = 这个人不限（他**仍然**受全站那一档约束）。
+
+按 Key 分桶只读请求里的 Key 做标识，**不做鉴权** —— 拿一把不存在的 Key 来刷
+只会进它自己的桶，然后照样 401。POST 请求的 Key 如果在 body 里，那次只算全站档。
+
+设定落盘到 `rate_limits.json`（跟额度配置同一个文件），重启后还在。
+`/apikey rate` 里还会列出「谁在占着」（Key 打码）—— 排查是谁把并发占满就看它。
 三个认证方式**任选其一**即可：
 
 ```bash
@@ -1230,6 +1255,7 @@ print(r.json()["player"]["displayname"])
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-26 | **并发上限支持「每人一档」**。全站那一档是**共享**的 —— 一个调用方开 50 个并发就能把 20 个槽位全占了，别人全 429；全站档只能保护「进程别被打垮」，保护不了「谁也别把谁挤死」。所以 `/apikey rate concurrency <Key或掩码|QQ号> <数字>` 能给单个人/单把 Key 另设一档，`off` 删掉。优先级 **按 Key > 按 QQ > 全站 > 环境变量 > 默认 20**。靠**参数个数**消歧（1 个 = 全站的值，2 个 = 先是谁再是值），不然 QQ 号和并发数都是数字没法分。按 Key 分桶只读请求里的 Key 做标识**不做鉴权** —— 拿不存在的 Key 来刷只会进它自己的桶然后照样 401；POST 的 Key 在 body 里时只算全站档。`/apikey rate` 会列出「谁在占着」（Key 打码）。实测：给两个 QQ 分别设 2 和 9，限 2 的连开 3 个得 `[True, True, False]`，同时另一个照常通过；释放后能再进；全站档独立生效。每把 Key 的计数在释放到 0 且没被拒过时整条删除，表不会涨 |
 | 2026-09-26 | **并发上限做成 `/apikey rate concurrency <N>`（热改，不用重启）**。`/apikey rate` 现在把并发上限和它的水位一起列出来；`concurrency <N>` 改、`concurrency 0` 不限、`concurrency off` 删掉设定回到环境变量。**没有单开指令** —— "每 Key 每分钟额度"和"同时在处理几个请求"同属"服务侧怎么限流"，挂在同一条下面就够了（第一版单开了一条 `/并发`，已撤掉重做）。优先级 **群里设的 > 环境变量 `QQBOT_MAX_CONCURRENCY` > 默认 20**，群里设的落盘到 `rate_limits.json` 所以重启后还在。做这个是因为"并发上限"是最需要**边看水位边调**的东西，而打满的那一刻正是不能重启的时刻 —— 只能改环境变量+重启的话等于没用。`/health` 的 `concurrency` 也补了 `src` / `env_default`，一眼看出当前值是哪来的 |
 | 2026-09-26 | **限流改成「并发上限 + 每分钟」两层，并把 nginx 那层从 `hyp-api` 删掉**。`hyp-api` 上的 nginx `limit_req`（20 req/s 每 IP）已移除，统一交给服务进程的**并发闸门** `QQBOT_MAX_CONCURRENCY`（默认 **20**，可调；`0` = 不限）。换成并发而不是速率的原因是：服务是 `ThreadingHTTPServer`，**每个请求开一个线程**，并发数本来没有上限 —— 一瞬间几千个请求就真去开几千个线程把内存吃光，而"每秒 N 次"的速率限制**看不见**这一点（它只管新请求来得多快，不管同时有多少还在跑）。满员时直接回 `429`（不排队 —— 排队会让延迟雪崩，而且排队的请求本身还占着连接和线程）。反代路径回 Hypixel 形状、本站 API 回 `{ok:false}`，两条路径分开不串味。水位可以从 `/health` 的 `concurrency: {limit, in_flight, peak, rejected}` 看。实测并发 60 打 200 发：`peak` 正好卡在 20 从没超，166 个 429 的 `cause` 都写明 `concurrency limit of 20` 且**明确不是你的 Key**。`hyp.firebounce.today` 和 GitHub webhook 的 nginx 限流**保留不动**（用户指定只删 api 端点那个）—— 它们上次补的 `limit_req_status 429` + JSON error_page 也保留，那是"别回 503 HTML"的修复 |
 | 2026-09-26 | **修两个限流 bug（压测暴露的）**。① **nginx 边缘限流回的是 `503` + 一页 HTML**：`hypapi` / `denick-api` / `hyp-web` 三个站点用了 `limit_req` 却都没设 `limit_req_status` —— nginx 默认值是 503（仓库里 southside / namewall 都设了 429，这三个当初漏了）。后果是状态码语义全错（503 = "服务器挂了"，重试库和监控都会当真故障）**而且**反代"只改 base url 就能用、返回和 Hypixel 一样"的承诺当场作废 —— 按 `{success,cause}` 解析的客户端会拿到 HTML。现在三个站点都设了 429，并用 `error_page 429` 让 nginx 自己的限流也回 JSON（`proxy_intercept_errors` 默认 off，所以**不会**盖掉上游 Python 那几种 429 的 cause）。② **反代跟 `/api/player` 共用同一个全局 90/分钟闸门**：那个闸门是给要真打 Hypixel/Urchin 的重接口准备的，全局不分人 —— 于是反代卖着"多把 Key 叠加额度"（3 把 = 900/分钟）却卡在 90/分钟，而且网站一忙反代跟着一起挂。实测压测 120 发里 30 发是 `Server is busy (global throttle)`。现在拆成独立一档 `QQBOT_PROXY_RATE`（默认 600/分钟），并把 `cause` 改成明确说"这是反代侧的突发限流，不是你的 Key"。修完复测：300 发并发里**零**个应用侧 429，非 200 全部是 nginx 边缘限流，形状正确 |
