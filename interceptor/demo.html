@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>BSK Hypixel API 反代拦截器 · 在线测试</title>
+<style>
+  :root{
+    --bg:#0f172a; --card:#1e293b; --line:#334155; --fg:#e2e8f0;
+    --muted:#94a3b8; --blue:#3b82f6; --green:#22c55e; --red:#ef4444;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;padding:28px 16px;background:var(--bg);color:var(--fg);
+    font:14px/1.7 system-ui,-apple-system,"Microsoft YaHei",sans-serif;
+  }
+  .wrap{max-width:900px;margin:0 auto}
+  h1{font-size:21px;margin:0 0 6px}
+  .sub{color:var(--muted);margin-bottom:22px;font-size:13px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+  label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}
+  input[type=text],input[type=password]{
+    width:100%;padding:9px 11px;border-radius:8px;border:1px solid var(--line);
+    background:#0b1220;color:var(--fg);font-family:ui-monospace,Consolas,monospace;font-size:13px;
+  }
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}
+  button{
+    padding:9px 16px;border-radius:8px;border:1px solid var(--line);
+    background:#0b1220;color:var(--fg);cursor:pointer;font-size:13px;
+  }
+  button:hover{border-color:var(--blue)}
+  button.primary{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:600}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}
+  .kv{background:#0b1220;border:1px solid var(--line);border-radius:8px;padding:10px}
+  .kv .k{color:var(--muted);font-size:11px}
+  .kv .v{font-family:ui-monospace,Consolas,monospace;font-size:12px;word-break:break-all;margin-top:3px}
+  pre{
+    background:#0b1220;border:1px solid var(--line);border-radius:8px;padding:12px;
+    overflow:auto;max-height:340px;font-size:12px;margin:0;white-space:pre-wrap;word-break:break-all;
+  }
+  .ok{color:var(--green)} .bad{color:var(--red)} .warn{color:#f59e0b}
+  .log{font-family:ui-monospace,Consolas,monospace;font-size:12px;max-height:220px;overflow:auto}
+  .log div{padding:3px 0;border-bottom:1px solid #1f2937}
+  .hint{font-size:12px;color:var(--muted);margin-top:10px}
+  code{background:#0b1220;padding:2px 5px;border-radius:4px;font-size:12px}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;border:1px solid var(--line)}
+  .pill.on{background:rgba(34,197,94,.15);border-color:var(--green);color:var(--green)}
+  .pill.off{background:rgba(148,163,184,.12);color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>BSK Hypixel API 反代拦截器</h1>
+  <div class="sub">
+    这个页面用来<b>现场验证</b>拦截器：下面所有请求都写在
+    <code>api.hypixel.net</code> 上，但会被拦截器改道到
+    <code>hyp-api.firebounce.today</code>，并自动填上你的 Key。
+  </div>
+
+  <div class="card">
+    <div class="row" style="margin-top:0">
+      <span class="pill off" id="statusPill">未启用</span>
+      <span class="sub" style="margin:0" id="statusText">填入 Key 后点「启用拦截」</span>
+    </div>
+
+    <div style="margin-top:14px">
+      <label>你的 API Key（bsk_ 开头）</label>
+      <input type="password" id="key" placeholder="bsk_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" spellcheck="false">
+    </div>
+
+    <div class="row">
+      <input type="checkbox" id="forceKey" checked>
+      <label for="forceKey" style="margin:0">强制使用这个 Key（覆盖请求里原有的）</label>
+    </div>
+
+    <div class="row">
+      <button class="primary" id="btnInstall">启用拦截</button>
+      <button id="btnUninstall">卸载拦截</button>
+      <button id="btnCall">① 发一个测试请求</button>
+      <button id="btnReset">清空统计</button>
+    </div>
+
+    <div class="hint">
+      没有 Key？在 QQ 群里发 <code>/apikey 你的QQ号</code> 申请，
+      或用 <code>/apikey help</code> 看完整流程。群里也有 <code>519594836</code>。
+    </div>
+  </div>
+
+  <div class="card">
+    <label>拦截统计</label>
+    <div class="grid" style="margin-top:6px">
+      <div class="kv"><div class="k">已拦截请求</div><div class="v" id="stIntercepted">0</div></div>
+      <div class="kv"><div class="k">已注入 Key</div><div class="v" id="stInjected">0</div></div>
+      <div class="kv"><div class="k">出错</div><div class="v" id="stErrors">0</div></div>
+      <div class="kv"><div class="k">最近改写的地址</div><div class="v" id="stLast">—</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <label>改写日志（拦截器实际做的事）</label>
+    <div class="log" id="log" style="margin-top:6px"><div class="sub">（还没有记录）</div></div>
+  </div>
+
+  <div class="card">
+    <label>服务端返回</label>
+    <pre id="out" style="margin-top:6px">（点上面「① 发一个测试请求」）</pre>
+  </div>
+
+</div>
+
+<!-- 核心拦截器。真源在 ../bsk-hypixel-interceptor.js -->
+<script src="../bsk-hypixel-interceptor.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var $ = function (id) { return document.getElementById(id); };
+  var PROXY = 'https://hyp-api.firebounce.today';
+
+  // 本地存一下 Key，省得每次刷新都重填（只是演示页，别当正式方案）
+  try { $('key').value = localStorage.getItem('bsk_demo_key') || ''; } catch (e) {}
+
+  function say(html, cls) {
+    var d = document.createElement('div');
+    d.innerHTML = (cls ? '<span class="' + cls + '">' : '') + html +
+                  (cls ? '</span>' : '');
+    var log = $('log');
+    if (log.firstChild && log.firstChild.className === 'sub') log.innerHTML = '';
+    log.insertBefore(d, log.firstChild);
+  }
+
+  function stats() {
+    var s = BSKHypixel.getStats();
+    $('stIntercepted').textContent = s.intercepted;
+    $('stInjected').textContent = s.keyInjected;
+    $('stErrors').textContent = s.errors;
+    $('stLast').textContent = s.lastUrl || '—';
+  }
+
+  function setStatus(on) {
+    $('statusPill').className = 'pill ' + (on ? 'on' : 'off');
+    $('statusPill').textContent = on ? '已启用' : '未启用';
+    $('statusText').textContent = on
+      ? ('api.hypixel.net → ' + PROXY)
+      : '填入 Key 后点「启用拦截」';
+  }
+
+  function install() {
+    var key = $('key').value.trim();
+    try { localStorage.setItem('bsk_demo_key', key); } catch (e) {}
+
+    BSKHypixel.install({
+      proxyBase: PROXY,
+      apiKey: key,
+      forceKey: $('forceKey').checked,
+      targetHosts: ['api.hypixel.net'],
+      onIntercept: function (from, to) {
+        say('改写: ' + from + '<br>　　→ ' + to, 'ok');
+      },
+    });
+    setStatus(BSKHypixel.isInstalled());
+    stats();
+    if (!key) {
+      say('提示: 没填 Key —— 地址会被改写，但请求会因为没有 Key 返回 401。', 'warn');
+    }
+  }
+
+  $('btnInstall').onclick = function () {
+    install();
+    say('拦截器已启用。', 'ok');
+  };
+
+  $('btnUninstall').onclick = function () {
+    BSKHypixel.uninstall();
+    setStatus(false);
+    say('拦截器已卸载，请求恢复原样。', 'warn');
+  };
+
+  $('btnReset').onclick = function () {
+    BSKHypixel.resetStats();
+    stats();
+    $('log').innerHTML = '<div class="sub">（还没有记录）</div>';
+  };
+
+  $('btnCall').onclick = function () {
+    if (!BSKHypixel.isInstalled()) install();
+
+    // ★ 故意写官方地址 —— 拦截器就是要在网络层把它改掉。
+    //   这里用 /v2/games（不需要 uuid，返回也小），方便快速验证。
+    var url = 'https://api.hypixel.net/v2/games';
+    say('发起请求: ' + url);
+    $('out').textContent = '请求中…';
+
+    fetch(url)
+      .then(function (r) {
+        return r.text().then(function (t) {
+          $('out').textContent =
+            'HTTP ' + r.status + ' ' + (r.ok ? '(成功)' : '(失败)') + '\n\n' + t;
+          say('返回 HTTP ' + r.status, r.ok ? 'ok' : 'bad');
+          stats();
+        });
+      })
+      .catch(function (e) {
+        $('out').textContent = '请求出错: ' + e;
+        say('请求出错: ' + e, 'bad');
+        stats();
+      });
+  };
+
+  setStatus(false);
+  stats();
+
+  // 方便在控制台里玩
+  window.BSKdemo = { BSK: BSKHypixel, install: install };
+})();
+</script>
+</body>
+</html>

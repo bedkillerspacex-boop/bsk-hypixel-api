@@ -8,6 +8,11 @@
 > | **Hypixel 官方 API 反代** | `https://hyp-api.firebounce.today` | **就是 Hypixel 官方格式** —— 端点和字段以 [官方文档](https://github.com/HypixelDev/PublicAPI) 为准，见[这一节](#hypixel-官方接口反代) |
 >
 > 给 AI / 爬虫的入口索引另见 [`llms.txt`](./llms.txt)。
+>
+> 🔌 **不想改代码就想用上反代？** 用
+> [`interceptor/`](./interceptor/README.md) —— 一个网络层拦截器，
+> 把代码里所有 `api.hypixel.net` 的请求自动改道到反代并自动填 Key，
+> **业务代码一行都不用改**。带中文控制面板的油猴脚本、JS 和 Python 三种版本。
 
 把 **Hypixel 昵称（nick）** 反查成 **真实玩家 ID**。
 
