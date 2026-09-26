@@ -18,7 +18,7 @@ const require = createRequire(import.meta.url);
 const here = path.dirname(fileURLToPath(import.meta.url));
 const proxy = require(path.join(here, '..', 'proxy.js'));
 
-const { stripKeyFromQuery, buildHeaders, CFG } = proxy;
+const { stripKeyFromQuery, buildHeaders, CFG, timestamp } = proxy;
 
 // buildHeaders 要注入的是 CFG.apiKey —— require 时没有配置文件, 所以要手动给一把。
 CFG.apiKey = 'bsk_testtesttesttesttesttesttest';
@@ -114,6 +114,32 @@ eq(buildHeaders({ Host: 'api.hypixel.net' })['Host'], undefined,
    'Host 的大小写变体也必须被处理, 不能漏给上游');
 eq(buildHeaders({ Host: 'api.hypixel.net' }).host, 'hyp-api.firebounce.today',
    '大写 Host 也要换成反代域名');
+
+// ---- 日志时间戳 ------------------------------------------------------------
+
+// ★ 回归: 以前用 toISOString()（**UTC**），日志写着 10:43 而墙上时钟是 18:43，
+//   用户拿它跟 Lunar 启动器日志（本地时间）一对就对不上，
+//   直接得出"拦截器没在写日志"的错误结论。必须是本地时间 + 时区偏移。
+{
+  const ts = timestamp();
+  ok(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{2}:\d{2}$/.test(ts),
+     `时间戳格式应为 "YYYY-MM-DD HH:MM:SS ±HH:MM"，实际 ${JSON.stringify(ts)}`);
+
+  const now = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  const wantLocal =
+    `${p(now.getFullYear())}-${p(now.getMonth() + 1)}-${p(now.getDate())} ` +
+    `${p(now.getHours())}:`;
+  ok(ts.startsWith(wantLocal),
+     `时间戳必须是**本地**时间（期望以 ${wantLocal} 开头，实际 ${ts}）`);
+  ok(!ts.startsWith(now.toISOString().slice(0, 13)),
+     '时间戳不能是 UTC（这正是之前误导排查的那个 bug）');
+}
+
+// ---- 候选：真实请求穿过 ----------------------------------------------------
+
+ok(typeof proxy.main === 'function', 'main 应该被导出（单测靠 require.main 守卫避开它）');
+ok(CFG.forceKey === true, '单测默认配置里 forceKey 应为 true');
 
 // ---- 结果 ----------------------------------------------------------------
 

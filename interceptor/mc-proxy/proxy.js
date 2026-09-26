@@ -114,11 +114,28 @@ if (CFG.logFile) {
   } catch (e) { /* 日志写不了不该让代理起不来 */ }
 }
 
+function timestamp() {
+  // ★ 必须用**本地时间**, 而且带上时区偏移。
+  //
+  //   以前用的是 `new Date().toISOString()` —— 那是 **UTC**。
+  //   于是日志写着 `[2026-09-26 10:43:35]` 而墙上时钟是 18:43,
+  //   用户拿它跟 Lunar 启动器日志（本地时间 18:19）一对, 完全对不上,
+  //   直接得出"拦截器从 13:34 起就没再写日志"的结论 —— 其实一直在写。
+  //   排查这类时间线问题, 时间戳差 8 小时是会真的误导人的。
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  const off = -d.getTimezoneOffset();          // 分钟, 东八区 = 480
+  const sign = off >= 0 ? '+' : '-';
+  return p(d.getFullYear()) + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+         ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()) +
+         ' ' + sign + p(Math.floor(Math.abs(off) / 60)) + ':' + p(Math.abs(off) % 60);
+}
+
 function log() {
   // ★ 必须走 util.format —— 手写 join(' ') 的话 `%s %d` 这些占位符**根本不会
   //   被替换**, 日志会原样打出 "GET %s -> %d"（本地实测踩到）。
   const msg = util.format.apply(util, arguments);
-  const line = '[' + new Date().toISOString().replace('T', ' ').slice(0, 19) + '] ' + msg;
+  const line = '[' + timestamp() + '] ' + msg;
   console.log(line);
   if (logStream) { try { logStream.write(line + '\n'); } catch (e) {} }
 }
@@ -383,4 +400,4 @@ function main() {
 if (require.main === module) {
   main();
 }
-module.exports = { stripKeyFromQuery, buildHeaders, main, CFG };
+module.exports = { stripKeyFromQuery, buildHeaders, main, CFG, timestamp };
