@@ -124,16 +124,81 @@ path、query、body、状态码、响应头**全都不动** —— 对调用方�
 
 ---
 
+## ★ Java 不认证书？两个都必须做
+
+这是这个工具**最容易失败的地方**，而且失败时的报错跟"拦截器坏了"长得一模一样：
+
+```
+javax.net.ssl.SSLHandshakeException:
+  PKIX path building failed: unable to find valid certification path to requested target
+```
+
+**浏览器一切正常、只有 Minecraft 挂** —— 因为 Java 完全不看 Windows 根证书库。
+要做两件事，缺一不可：
+
+### ① CA 证书必须有 `basicConstraints: CA:TRUE`
+
+`New-SelfSignedCertificate -KeyUsage CertSign` **不会**自动加这个扩展。
+没有它的时候：
+
+| 谁 | 反应 |
+| --- | --- |
+| Windows 根证书库 | 不管，照用 —— 所以**很容易以为没问题** |
+| 浏览器 | 不管，照常工作 |
+| **Java 的 PKIX** | **直接拒绝**：`TrustAnchor with subject "..." is not a CA certificate` |
+
+脚本现在会**主动检查**这条，发现旧 CA 不合规就自动重签（用
+`-Type Custom -TextExtension '2.5.29.19={critical}{text}ca=1'`）。
+
+> 顺便：`keyUsage` **不能**塞进 `-TextExtension` —— 那边不认
+> `keyCertSign` 这种关键字，也不认数值位掩码（`86` / `160` / `a0` 全报
+> `0x80070057`），必须用独立的 `-KeyUsage` 参数。
+
+### ② CA 必须导进**每个 JRE 自己的** `cacerts`
+
+Java 用的是 `<JRE>\lib\security\cacerts`，跟系统库毫无关系。
+而且启动器会带**好几份** JRE（实测 Lunar 自带 Java 25/17/21 三份，
+Prism 一份）—— 游戏用哪份是按版本挑的，**只导一份的话换个版本玩就又挂了**。
+
+`拦截.cmd` 现在会自动扫描并导入（系统 Java + Lunar / Prism / MultiMC /
+CurseForge / Modrinth 等启动器的 JRE），改动前会备份成 `cacerts.bsk-backup`。
+
+> ⚠️ **必须用管理员身份跑「拦截」** —— `C:\Program Files\Java\...` 那些
+> 需要管理员权限才能写。脚本会自己弹 UAC，点「是」就行。
+> 哪个 JRE 没导成功，收尾时会明确列出来。
+
+### 验证 Java 那边到底通没通
+
+仓库里带了一个直接用 JVM 发请求的工具：
+
+```bash
+# 用 JDK 编译
+javac -d . tests/JavaTlsTest.java
+# 用**游戏实际用的那个** JRE 跑
+"<JRE>\bin\java.exe" -cp . JavaTlsTest "https://api.hypixel.net/v2/resources/games" bsk_你的Key
+```
+
+通了就是：
+
+```
+HTTP 200
+服务端证书 subject : CN=api.hypixel.net
+服务端证书 issuer  : CN=BSK Hypixel Local CA
+BODY {"success":true,...}
+```
+
+失败会是 `PKIX path building failed`。
+
 ## 常见问题
 
 **Q：装完没生效？**
 重启 Minecraft。Java 有 DNS 缓存，不重启可能还在连旧地址。
 还不行就跑 `状态.cmd` 看 hosts 和代理是不是都在。
 
-**Q：Minecraft 报证书错误 / SSL 错误？**
-根证书没装成功。跑 `状态.cmd` 看「根证书」那行是不是「已信任」。
-手动装：双击 `certs\BSK-CA.cer` → 安装证书 → 当前用户 →
-「受信任的根证书颁发机构」。
+**Q：Minecraft 报证书错误 / SSL 错误 / `PKIX path building failed`？**
+看上面那节「★ Java 不认证书？两个都必须做」。
+最常见的是：**没用管理员身份跑「拦截」**，导致 `C:\Program Files\Java\...`
+那几个 JRE 的 cacerts 没导进去。
 
 **Q：443 端口被占？**
 一般是上次的代理没退干净。先跑一次 `恢复.cmd` 再拦截。

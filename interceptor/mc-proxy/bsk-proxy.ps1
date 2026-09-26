@@ -25,7 +25,13 @@ param(
     [switch]$NoStart,
 
     # 恢复时连根证书一起删掉
-    [switch]$RemoveCa
+    [switch]$RemoveCa,
+
+    # 拦截时**不**碰 Java 信任库（默认会导，因为不导 Java 程序就报证书错）
+    [switch]$NoJava,
+
+    # 恢复时把 CA 从 Java 信任库里也移出去
+    [switch]$RemoveJava
 )
 
 $ErrorActionPreference = 'Stop'
@@ -81,8 +87,10 @@ function Invoke-SelfElevate {
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit',
         '-File', ('"' + $PSCommandPath + '"'), $Action
     )
-    if ($RemoveCa) { $a += '-RemoveCa' }
-    if ($NoStart)  { $a += '-NoStart' }
+    if ($RemoveCa)   { $a += '-RemoveCa' }
+    if ($NoStart)    { $a += '-NoStart' }
+    if ($NoJava)     { $a += '-NoJava' }
+    if ($RemoveJava) { $a += '-RemoveJava' }
     Start-Process -FilePath 'powershell.exe' -ArgumentList $a -Verb RunAs | Out-Null
     exit
 }
@@ -153,6 +161,26 @@ function Get-ExistingCert($subject, $store = 'Cert:\CurrentUser\My') {
         Select-Object -First 1
 }
 
+function Test-CaCompliant($cert) {
+    <#
+      这张证书**能不能当 CA 用**？
+
+      ★ 判据就是 basicConstraints=CA:TRUE (OID 2.5.29.19)。
+        没有这个扩展时:
+          · 浏览器 / Windows 根库  -> 不管, 照用（所以很容易以为没问题）
+          · Java 的 PKIX           -> 直接拒绝: "TrustAnchor with subject
+                                      ... is not a CA certificate"
+        实测就是被这个坑到: 证书在 Windows 根库里躺着、浏览器一切正常,
+        只有 Minecraft（Java）全挂。所以必须显式检查。
+    #>
+    if (-not $cert) { return $false }
+    $bc = $cert.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.19' }
+    if (-not $bc) { return $false }
+    # 格式化出来大概是 "Subject Type=CA\nPath Length Constraint=None"
+    $txt = $bc.Format($false)
+    return [bool]($txt -match 'CA')
+}
+
 function Ensure-Certs {
     <#
       生成（或复用）本地 CA + api.hypixel.net 的叶子证书，并把 CA 装进
@@ -177,38 +205,71 @@ function Ensure-Certs {
     $caPfx   = Join-Path $CertDir 'BSK-CA.pfx'
 
     $ca = Get-ExistingCert $CaSubject
+    if ($ca -and -not (Test-CaCompliant $ca)) {
+        # ★ 老版本生成的 CA **没有 basicConstraints 扩展**, Java 的 PKIX 会直接
+        #   拒绝它: "TrustAnchor with subject ... is not a CA certificate"。
+        #   浏览器不看这条所以没事, JVM 一定挂 —— 实测被用户抓到了。
+        #   检测到不合规就**丢掉重签**, 不能复用。
+        Warn '现有 CA 缺 basicConstraints（Java 不认它当 CA），重新生成…'
+        Remove-Item "Cert:\CurrentUser\My\$($ca.Thumbprint)" -Force -ErrorAction SilentlyContinue
+        $ca = $null
+    }
+
     if (-not $ca) {
         Info '生成本地根证书 (CA)…'
+        # ★ 必须 -Type Custom + -TextExtension 手写 basicConstraints。
+        #   `-KeyUsage CertSign` **不会**自动加 basicConstraints=CA:TRUE ——
+        #   这是最容易漏的一步: Windows 根库里装了、浏览器也认,
+        #   但 Java 的 PKIX 会判定"这不是 CA 证书"从而拒绝整条链:
+        #     TrustAnchor with subject "CN=..." is not a CA certificate
+        #
+        #   keyUsage **别**塞进 -TextExtension: 那边不认 keyCertSign 这种关键字,
+        #   也不认数值位掩码（86 / 160 / a0 全报 "参数错误" 0x80070057），
+        #   必须用独立的 -KeyUsage 参数。（这几个值都实测过。）
         $ca = New-SelfSignedCertificate `
+            -Type Custom `
             -Subject $CaSubject `
+            -KeySpec Signature `
             -KeyUsage CertSign, CRLSign, DigitalSignature `
             -KeyExportPolicy Exportable `
             -KeyLength 2048 -KeyAlgorithm RSA -HashAlgorithm SHA256 `
             -CertStoreLocation 'Cert:\CurrentUser\My' `
-            -NotAfter (Get-Date).AddYears(10)
+            -NotAfter (Get-Date).AddYears(10) `
+            -TextExtension @('2.5.29.19={critical}{text}ca=1')   # basicConstraints: CA:TRUE
         Ok ("CA 已生成: " + $ca.Thumbprint)
+        if (-not (Test-CaCompliant $ca)) {
+            Bad 'CA 生成后仍缺 basicConstraints —— 环境异常，中止'
+            exit 1
+        }
     } else {
-        Ok ("复用已有 CA: " + $ca.Thumbprint)
+        Ok ("复用已有 CA: " + $ca.Thumbprint + "  (basicConstraints 正常)")
     }
 
     # 叶子证书：换过 CA 就得重签
     $leaf = Get-ExistingCert $LeafSubject
     $needLeaf = $true
     if ($leaf) {
-        try {
-            # 校验这张叶子是不是当前 CA 签的 —— CA 重建过就必须重签
-            $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
-            $chain.ChainPolicy.RevocationMode = 'NoCheck'
-            $chain.ChainPolicy.VerificationFlags = 'AllowUnknownCertificateAuthority'
-            # ★ 这一行的返回值必须吞掉 —— 它就是那个泄漏出 0 的元凶
-            $null = $chain.ChainPolicy.ExtraStore.Add($ca)
-            $null = $chain.Build($leaf)
-            $issuerOk = ($chain.ChainElements.Count -gt 1)
-            if ($issuerOk) {
+        # ★ 用 **Authority Key Identifier == CA 的 Subject Key Identifier** 判断,
+        #   而不是 X509Chain。
+        #
+        #   为什么不用 X509Chain: 新旧 CA 的 Subject **完全一样**
+        #   ("CN=BSK Hypixel Local CA"), 链构建按主题名就能配上 ——
+        #   于是换了 CA 之后它照样报"能构建", 结果**复用了旧叶子**,
+        #   签名其实对不上、链是断的。实测踩到: 新 CA 生成了,
+        #   叶子却没重签, Java 依然报证书错。
+        #   AKI/SKI 比的是**密钥标识**, 换了密钥就一定不相等, 这个才靠得住。
+        $leafAki = $leaf.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.35' }
+        $caSkid = $ca.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.14' }
+        if ($leafAki -and $caSkid) {
+            $a = ($leafAki.Format($false) -replace '[^0-9a-fA-F]', '').ToLower()
+            $b = ($caSkid.Format($false) -replace '[^0-9a-fA-F]', '').ToLower()
+            if ($a -and $b -and $a.Contains($b)) {
                 $needLeaf = $false
                 Ok ("复用已有叶子证书: " + $leaf.Thumbprint)
+            } else {
+                Info '叶子证书是**另一把 CA 密钥**签的，需要重签'
             }
-        } catch { $needLeaf = $true }
+        }
     }
 
     if ($needLeaf) {
@@ -218,15 +279,26 @@ function Ensure-Certs {
         } else {
             Info "生成 $TARGET_HOST 的证书…"
         }
+        # 叶子也手写扩展: 明确 CA:FALSE、限定 keyUsage、EKU 只要 serverAuth。
+        # -DnsName 负责加 subjectAltName（现代 TLS 客户端只认 SAN, 不认 CN）。
+        # keyUsage / EKU 同样走独立参数, 理由见上面 CA 那段。
         $leaf = New-SelfSignedCertificate `
+            -Type Custom `
             -Subject $LeafSubject `
+            -KeySpec KeyExchange `
+            -KeyUsage DigitalSignature, KeyEncipherment `
             -DnsName $TARGET_HOST `
             -KeyExportPolicy Exportable `
             -KeyLength 2048 -KeyAlgorithm RSA -HashAlgorithm SHA256 `
             -CertStoreLocation 'Cert:\CurrentUser\My' `
             -NotAfter (Get-Date).AddYears(5) `
-            -Signer $ca
+            -Signer $ca `
+            -TextExtension @('2.5.29.19={critical}{text}ca=0')   # 它不是 CA
         Ok ("叶子证书已生成: " + $leaf.Thumbprint)
+
+        # SAN 必须有 —— 少了它 JVM 会报 "No subject alternative names present"
+        $san = $leaf.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.17' }
+        if (-not $san) { Bad "叶子证书没有 SAN，中止"; exit 1 }
     }
 
     # 导出给 Node 用（Node 直接吃 pfx，省得转 PEM）
@@ -247,9 +319,15 @@ function Ensure-Certs {
             $null = Import-Certificate -FilePath $caCer -CertStoreLocation 'Cert:\CurrentUser\Root'
             Ok 'CA 已信任'
         } catch {
-            Bad "装根证书失败: $($_.Exception.Message)"
-            Info "也可以手动装: 双击 $caCer → 安装证书 → 本地计算机/当前用户 → 受信任的根证书颁发机构"
-            exit 1
+            # ★ 这里**不再 exit 1**。
+            #   Windows 根库只有浏览器/系统在用; **Java 根本不看它**
+            #   （走自己的 cacerts）。而 Java（Minecraft）才是这个工具的主场景,
+            #   所以这一步失败不该把整件事拦下来 —— 警告 + 给手动办法就够了。
+            #   顺便: 非交互式会话里 Import-Certificate 到 Root 会报
+            #   "UI is not allowed in this operation", 属于正常现象。
+            Warn "装进 Windows 根库没成功: $($_.Exception.Message)"
+            Info "（不影响 Minecraft —— Java 走自己的 cacerts，下面会单独导）"
+            Info "想让浏览器也认: 双击 $caCer → 安装证书 → 当前用户 → 受信任的根证书颁发机构"
         }
     }
 
@@ -261,6 +339,184 @@ function Ensure-Certs {
 
     # 显式 return 一个字符串, 别让任何意外输出混进去（见函数头的说明）
     return [string]$leafPfx
+}
+
+# ---- Java 信任库 ------------------------------------------------------------
+#
+# ★ 光把 CA 装进 Windows 根库**不够** —— Java 用的是自己的 cacerts, 不看系统库。
+#   所以还要把 CA 导进每个 JRE 的 lib\security\cacerts, 否则 Minecraft
+#   （以及任何走 Java 访问 api.hypixel.net 的东西）都会报:
+#       PKIX path building failed: unable to find valid certification path
+#
+#   为什么每个 JRE 都要导: 启动器会带**好几份** JRE（实测 Lunar 自带
+#   Java 25/17/21 三份, Prism 一份）, 而游戏用哪份是按版本挑的 ——
+#   只导一份的话换个版本玩就又挂了。
+
+$JavaAlias = 'bsk-hypixel-local-ca'
+
+function Invoke-Keytool($keytool, [string[]]$Arguments) {
+    <#
+      跑 keytool, 返回 @(退出码, 输出)。
+
+      ★ 三个坑, 全是实测踩出来的。keytool 是**原生 exe**,
+        跟 PowerShell 之间隔着命令行字符串和代码页, 特别容易坏。
+
+      1) 含**空格**的参数要加引号, 而且得自己加。
+         `-keystore C:\Program Files\...` 不加引号会被拆成两段。
+         这就是为什么 `C:\Users\...\.lunarclient\...`（没空格）能成功,
+         而 `C:\Program Files\...` 全失败 —— 命令一模一样。
+
+      2) **参数里别出现中文**。我们的证书在
+         `E:\DESKTOP\新建文件夹\...`, 传给 keytool.exe 时按代码页转换会乱,
+         结果 keytool 把后面的路径当成"非法选项"报错。
+         → 调用方负责先把证书复制到纯 ASCII 的临时路径（见 Sync-JavaTrustStores）。
+
+      3) 用 **Start-Process + 单条参数串**, 别用 `& $exe $array`。
+         `&` 的引号规则在 Windows PowerShell 5.1 和 PowerShell 7 下**不一样**
+         （7 会自动加引号, 5.1 不会）, 同一份代码两边表现不同。
+         Start-Process 收的是**一个字符串**, 引号完全由我们掌控, 版本无关。
+         （用户的 .cmd 拉起的是 5.1, 我自测用的是 7 —— 必须两边都对。）
+    #>
+    $quoted = @($Arguments | ForEach-Object {
+        if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ }
+    })
+    $argLine = ($quoted -join ' ')
+
+    $tmpOut = [IO.Path]::GetTempFileName()
+    $tmpErr = [IO.Path]::GetTempFileName()
+    try {
+        $p = Start-Process -FilePath $keytool -ArgumentList $argLine `
+                           -Wait -PassThru -NoNewWindow `
+                           -RedirectStandardOutput $tmpOut -RedirectStandardError $tmpErr `
+                           -ErrorAction Stop
+        $code = $p.ExitCode
+        $out = [string](Get-Content $tmpOut -Raw -ErrorAction SilentlyContinue) +
+               [string](Get-Content $tmpErr -Raw -ErrorAction SilentlyContinue)
+    } catch {
+        $code = -1
+        $out = "$($_.Exception.Message)"
+    } finally {
+        Remove-Item $tmpOut, $tmpErr -Force -ErrorAction SilentlyContinue
+    }
+    return @($code, $out)
+}
+
+function Get-JavaTrustStores {
+    <# 找出这台机器上所有该打理的 cacerts（启动器自带 JRE + 系统 Java）。 #>
+    $roots = @(
+        # 启动器自带
+        (Join-Path $env:USERPROFILE '.lunarclient'),
+        (Join-Path $env:APPDATA '.minecraft\runtime'),
+        (Join-Path $env:APPDATA 'PrismLauncher'),
+        (Join-Path $env:APPDATA 'MultiMC'),
+        (Join-Path $env:APPDATA 'com.modrinth.theseus'),
+        (Join-Path $env:APPDATA 'gdlauncher_next'),
+        (Join-Path $env:USERPROFILE 'curseforge'),
+        (Join-Path $env:USERPROFILE 'AppData\Local\Programs\PrismLauncher'),
+        # 系统 Java
+        (Join-Path $env:ProgramFiles 'Java'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Java'),
+        (Join-Path $env:ProgramFiles 'Eclipse Adoptium'),
+        (Join-Path $env:ProgramFiles 'Zulu'),
+        (Join-Path $env:ProgramFiles 'BellSoft'),
+        (Join-Path $env:ProgramFiles 'Amazon Corretto'),
+        (Join-Path $env:ProgramFiles 'Microsoft')
+    ) | Where-Object { $_ -and (Test-Path $_) }
+
+    $found = @()
+    foreach ($r in $roots) {
+        # 深度限制一下 —— 无脑递归整个 Program Files 会很慢
+        Get-ChildItem $r -Recurse -Filter 'cacerts' -File -Depth 7 -ErrorAction SilentlyContinue |
+            Where-Object { $_.DirectoryName -like '*lib\security*' } |
+            ForEach-Object { $found += $_.FullName }
+    }
+    return @($found | Sort-Object -Unique)
+}
+
+function Get-KeytoolFor($cacertsPath) {
+    <# 找同一个 JRE 里的 keytool —— 别用 PATH 上那个（版本可能不匹配）。 #>
+    $jre = Split-Path (Split-Path (Split-Path $cacertsPath -Parent) -Parent) -Parent
+    $kt = Join-Path $jre 'bin\keytool.exe'
+    if (Test-Path $kt) { return $kt }
+    $g = Get-Command keytool -ErrorAction SilentlyContinue
+    if ($g) { return $g.Source }
+    return $null
+}
+
+function Test-CaInJavaStore($keytool, $cacertsPath) {
+    <# 用**退出码**判断别名在不在: keytool -list -alias 存在返回 0, 不存在返回 1。 #>
+    $r = Invoke-Keytool $keytool @('-list', '-keystore', $cacertsPath,
+                                  '-storepass', 'changeit', '-alias', $JavaAlias)
+    return ($r[0] -eq 0)
+}
+
+function Sync-JavaTrustStores($ca, $remove = $false) {
+    <#
+      把我们的 CA 导入 / 移出所有 JRE 的 cacerts。返回 (成功数, 总数, 明细)。
+      每个 cacerts 改动前会备份一份 .bsk-backup（只备一次, 不覆盖）。
+    #>
+    $stores = Get-JavaTrustStores
+    if (-not $stores) {
+        Info '没找到任何 Java 信任库（没装 Java？那就不需要这一步）'
+        return @(0, 0, @())
+    }
+
+    # ★ 路径要自己从 $CertDir 推 —— $caCer 是 Ensure-Certs 里的**局部变量**,
+    #   在这儿取不到（实测拿到空串, Copy-Item 报"参数是空值"）。
+    $caCer = Join-Path $CertDir 'BSK-CA.cer'
+
+    # ★ 再把 CA 复制到**纯 ASCII 的临时路径**喂给 keytool。
+    #   证书本来在 `E:\DESKTOP\新建文件夹\...` —— 中文路径传给原生
+    #   keytool.exe 时会按代码页转换, 转坏了它就把后面的参数当成"非法选项",
+    #   报一堆看不懂的错。实测就是这么失败的。
+    #   %TEMP% 通常是 `C:\Users\<名>\AppData\Local\Temp`, 用户名也可能是中文,
+    #   所以再加一层检查。
+    $asciiCer = Join-Path $env:TEMP 'bsk-hypixel-ca.cer'
+    if ($asciiCer -match '[^\x00-\x7F]') {
+        $asciiCer = Join-Path 'C:\Windows\Temp' 'bsk-hypixel-ca.cer'
+    }
+    try {
+        Copy-Item $caCer $asciiCer -Force
+    } catch {
+        Info "证书复制到临时路径失败: $($_.Exception.Message)"
+        return @(0, $stores.Count, @('★ 无法准备证书文件'))
+    }
+
+    $done = 0
+    $detail = @()
+    foreach ($cacerts in $stores) {
+        $kt = Get-KeytoolFor $cacerts
+        if (-not $kt) {
+            $detail += "跳过（找不到 keytool）: $cacerts"
+            continue
+        }
+        $exists = Test-CaInJavaStore $kt $cacerts
+        $short = $cacerts -replace [regex]::Escape($env:USERPROFILE), '~'
+
+        if ($remove) {
+            if (-not $exists) { $detail += "无需移除: $short"; continue }
+            $r = Invoke-Keytool $kt @('-delete', '-alias', $JavaAlias,
+                                      '-keystore', $cacerts, '-storepass', 'changeit')
+            if ($r[0] -eq 0) { $done++; $detail += "已移除: $short" }
+            else { $detail += "★ 移除失败: $short  $($r[1].Trim())" }
+            continue
+        }
+
+        if ($exists) { $done++; $detail += "已有: $short"; continue }
+
+        # 备份（只备一次 —— 别把改动前的状态覆盖掉）
+        $bak = "$cacerts.bsk-backup"
+        if (-not (Test-Path $bak)) {
+            try { Copy-Item $cacerts $bak -Force } catch { }
+        }
+
+        $r = Invoke-Keytool $kt @('-importcert', '-noprompt', '-trustcacerts',
+                                  '-alias', $JavaAlias, '-file', $asciiCer,
+                                  '-keystore', $cacerts, '-storepass', 'changeit')
+        if ($r[0] -eq 0) { $done++; $detail += "已导入: $short" }
+        else { $detail += "★ 导入失败: $short  $($r[1].Trim())" }
+    }
+    return @($done, $stores.Count, $detail)
 }
 
 # ---- 配置 ------------------------------------------------------------------
@@ -509,7 +765,24 @@ function Do-拦截 {
     Step '3/5 写配置'
     $cfg = Ensure-Config $leafPfx
 
-    Step '4/5 改 hosts'
+    Step '4/6 导入 Java 信任库'
+    #
+    # ★ 光装进 Windows 根库是不够的 —— Java 用自己的 cacerts, 不看系统库。
+    #   不导这一步, Minecraft 里所有打 api.hypixel.net 的 mod 都会报
+    #   "PKIX path building failed"。这是"拦截装好了但游戏还是挂"的头号原因。
+    if ($NoJava) {
+        Info '（-NoJava：跳过。Java 程序会不信任我们的证书）'
+    } else {
+        $caCert = Get-ExistingCert $CaSubject
+        $r = Sync-JavaTrustStores $caCert
+        Info "JRE 信任库: $($r[0])/$($r[1]) 个已处理"
+        foreach ($d in $r[2]) { Write-Host "    $d" -ForegroundColor DarkGray }
+        if ($r[1] -gt 0 -and $r[0] -lt $r[1]) {
+            Warn '有 JRE 没导成功 —— 那些 JRE 里的 Java 程序仍会报证书错误'
+        }
+    }
+
+    Step '5/6 改 hosts'
     $bak = Backup-Hosts
     $lines = @(Get-Content -LiteralPath $HOSTS -ErrorAction SilentlyContinue)
     $lines += ''
@@ -521,7 +794,7 @@ function Do-拦截 {
     Ok "$TARGET_HOST -> 127.0.0.1"
     Clear-DnsCache
 
-    Step '5/5 启动代理'
+    Step '6/6 启动代理'
     Start-Proxy
 
     Write-Host ''
@@ -532,6 +805,7 @@ function Do-拦截 {
     if (-not $cfg.apiKey) { Warn '还没填 Key —— 编辑 config.json 里的 apiKey 再重启代理' }
     Info "hosts 备份: $bak"
     Write-Host ''
+    Info '★ 记得**重启 Minecraft**（Java 有 DNS 缓存, 不重启可能还在连旧地址）'
     Info '要还原就双击「恢复.cmd」（或 .\bsk-proxy.ps1 恢复）'
     Write-Host ''
 }
@@ -539,10 +813,10 @@ function Do-拦截 {
 function Do-恢复 {
     Invoke-SelfElevate
 
-    Step '1/4 停掉代理'
+    Step '1/5 停掉代理'
     Stop-Proxy
 
-    Step '2/4 还原 hosts'
+    Step '2/5 还原 hosts'
     if (-not (Test-Path $HOSTS)) {
         Warn "找不到 hosts: $HOSTS"
     } else {
@@ -557,7 +831,7 @@ function Do-恢复 {
     }
     Clear-DnsCache
 
-    Step '3/4 检查结果'
+    Step '3/5 检查 hosts'
     $left = Get-OurHostsLines
     if ($left.Count -eq 0) {
         Ok "$TARGET_HOST 已不再指向本机"
@@ -565,7 +839,17 @@ function Do-恢复 {
         Warn "还剩 $($left.Count) 行没清掉，请手动检查 $HOSTS"
     }
 
-    Step '4/4 根证书'
+    Step '4/5 移出 Java 信任库'
+    if ($RemoveJava) {
+        $r = Sync-JavaTrustStores $null -remove $true
+        Ok "Java 信任库: 处理了 $($r[0])/$($r[1]) 个"
+        foreach ($d in $r[2]) { Write-Host "    $d" -ForegroundColor DarkGray }
+    } else {
+        Info 'Java 信任库里**保留**着（下次拦截就不用再导一遍）'
+        Info '想彻底移出: .\bsk-proxy.ps1 恢复 -RemoveJava'
+    }
+
+    Step '5/5 根证书'
     if ($RemoveCa) {
         $ca = Get-ExistingCert $CaSubject
         if ($ca) {
