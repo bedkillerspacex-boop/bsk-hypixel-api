@@ -31,7 +31,11 @@ param(
     [switch]$NoJava,
 
     # 恢复时把 CA 从 Java 信任库里也移出去
-    [switch]$RemoveJava
+    [switch]$RemoveJava,
+
+    # 忽略缓存, 重新全盘找一遍 Java 信任库
+    # （新装了启动器 / 整合包之后用它）
+    [switch]$ForceRescan
 )
 
 $ErrorActionPreference = 'Stop'
@@ -91,6 +95,7 @@ function Invoke-SelfElevate {
     if ($NoStart)    { $a += '-NoStart' }
     if ($NoJava)     { $a += '-NoJava' }
     if ($RemoveJava) { $a += '-RemoveJava' }
+    if ($ForceRescan){ $a += '-ForceRescan' }
     Start-Process -FilePath 'powershell.exe' -ArgumentList $a -Verb RunAs | Out-Null
     exit
 }
@@ -401,10 +406,58 @@ function Invoke-Keytool($keytool, [string[]]$Arguments) {
     return @($code, $out)
 }
 
+# 扫描时要剪掉的目录 —— 这些底下不可能有游戏用的 JRE, 但会拖慢全盘扫描。
+$JavaScanSkip = @(
+    'Windows', '$Recycle.Bin', 'System Volume Information', 'ProgramData',
+    'PerfLogs', 'Recovery', 'MSOCache', 'Config.Msi', '\node_modules\',
+    '\.git\', '\AppData\Local\Temp\', '\AppData\Local\Microsoft\',
+    '\AppData\Local\Packages\', '\$WinREAgent'
+)
+
+function Test-JavaScanSkip($path) {
+    foreach ($s in $JavaScanSkip) {
+        if ($path -like "*$s*") { return $true }
+    }
+    return $false
+}
+
 function Get-JavaTrustStores {
-    <# 找出这台机器上所有该打理的 cacerts（启动器自带 JRE + 系统 Java）。 #>
+    <#
+      找出这台机器上**所有**该打理的 cacerts。
+
+      ★ 必须全盘扫, 不能只扫固定几个位置（第一版就是这么写的, 结果漏了）。
+        实测用户机器上有 **30 个** cacerts —— 国内玩家的机器上通常装了好几个
+        启动器 / 整合包 / 客户端, 每个都自带 JRE:
+            E:\DESKTOP\mc\.minecraft\runtime\jre-legacy\...     (官方启动器, 1.8.9 用)
+            E:\DESKTOP\mc\.minecraft\runtime\java-runtime-*\...
+            E:\DESKTOP\mc\ViaProxy 一键启动\jdk-1.8\jre\...
+            D:\MCLDownload\ext\...  C:\MCLDownload\ext\...       (各种启动器)
+        只扫 Program Files 和 %APPDATA%\.minecraft 的话, **游戏真正在用的那几个
+        一个都扫不到** —— 于是证书导了一堆没用的, 游戏还是 PKIX 报错。
+
+      扫描结果会缓存到 java-stores.json（默认 1 天）, 免得每次拦截都全盘扫一遍。
+      config.json 里的 `extraJavaRoots` 可以补扫自动发现够不到的地方。
+    #>
+    $cacheFile = Join-Path $Root 'java-stores.json'
+    $cacheHours = 24
+    if (-not $ForceRescan -and (Test-Path $cacheFile)) {
+        try {
+            $c = Get-Content $cacheFile -Raw -Encoding UTF8 | ConvertFrom-Json
+            $age = (Get-Date) - [datetime]$c.scannedAt
+            if ($age.TotalHours -lt $cacheHours -and $c.stores) {
+                $alive = @($c.stores | Where-Object { Test-Path $_ })
+                if ($alive.Count -gt 0) {
+                    Info "用缓存的 Java 信任库清单（$($alive.Count) 个, $([int]$age.TotalMinutes) 分钟前扫的）"
+                    return $alive
+                }
+            }
+        } catch { }
+    }
+
+    $found = @()
+
+    # ① 已知位置（快, 先做掉）
     $roots = @(
-        # 启动器自带
         (Join-Path $env:USERPROFILE '.lunarclient'),
         (Join-Path $env:APPDATA '.minecraft\runtime'),
         (Join-Path $env:APPDATA 'PrismLauncher'),
@@ -412,8 +465,6 @@ function Get-JavaTrustStores {
         (Join-Path $env:APPDATA 'com.modrinth.theseus'),
         (Join-Path $env:APPDATA 'gdlauncher_next'),
         (Join-Path $env:USERPROFILE 'curseforge'),
-        (Join-Path $env:USERPROFILE 'AppData\Local\Programs\PrismLauncher'),
-        # 系统 Java
         (Join-Path $env:ProgramFiles 'Java'),
         (Join-Path ${env:ProgramFiles(x86)} 'Java'),
         (Join-Path $env:ProgramFiles 'Eclipse Adoptium'),
@@ -422,15 +473,48 @@ function Get-JavaTrustStores {
         (Join-Path $env:ProgramFiles 'Amazon Corretto'),
         (Join-Path $env:ProgramFiles 'Microsoft')
     ) | Where-Object { $_ -and (Test-Path $_) }
-
-    $found = @()
     foreach ($r in $roots) {
-        # 深度限制一下 —— 无脑递归整个 Program Files 会很慢
         Get-ChildItem $r -Recurse -Filter 'cacerts' -File -Depth 7 -ErrorAction SilentlyContinue |
             Where-Object { $_.DirectoryName -like '*lib\security*' } |
             ForEach-Object { $found += $_.FullName }
     }
-    return @($found | Sort-Object -Unique)
+
+    # ② 用户手工补的根目录（自动发现够不到的地方）
+    $cfg = $null
+    if (Test-Path $CfgPath) {
+        try { $cfg = Get-Content $CfgPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+    }
+    if ($cfg -and $cfg.extraJavaRoots) {
+        foreach ($r in @($cfg.extraJavaRoots)) {
+            if (-not $r -or -not (Test-Path $r)) { continue }
+            Get-ChildItem $r -Recurse -Filter 'cacerts' -File -Depth 7 -ErrorAction SilentlyContinue |
+                Where-Object { $_.DirectoryName -like '*lib\security*' } |
+                ForEach-Object { $found += $_.FullName }
+        }
+    }
+
+    # ③ 全盘扫（这才是能真正覆盖到的做法）
+    $drives = @(Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue |
+                Where-Object { $_.Free -ne $null -and (Test-Path $_.Root) } |
+                Select-Object -ExpandProperty Root)
+    Info "全盘找 Java 信任库（$($drives.Count) 个盘, 可能要几十秒）…"
+    foreach ($d in $drives) {
+        Get-ChildItem $d -Recurse -Filter 'cacerts' -File -Depth 8 -ErrorAction SilentlyContinue |
+            Where-Object {
+                ($_.DirectoryName -like '*lib\security') -and -not (Test-JavaScanSkip $_.FullName)
+            } | ForEach-Object { $found += $_.FullName }
+    }
+
+    $stores = @($found | Sort-Object -Unique)
+    Ok "找到 $($stores.Count) 个 Java 信任库"
+
+    try {
+        Write-TextNoBom $cacheFile (@{
+            scannedAt = (Get-Date).ToString('o')
+            stores    = $stores
+        } | ConvertTo-Json -Depth 4)
+    } catch { }
+    return $stores
 }
 
 function Get-KeytoolFor($cacertsPath) {
@@ -450,6 +534,29 @@ function Test-CaInJavaStore($keytool, $cacertsPath) {
     return ($r[0] -eq 0)
 }
 
+function Get-JavaStoreState {
+    <# 读「哪些 cacerts 已经导过了」的记录（按 CA 指纹 + 文件 mtime/大小 判定）。 #>
+    $f = Join-Path $Root 'java-store-state.json'
+    if (-not (Test-Path $f)) { return @{} }
+    try {
+        $d = Get-Content $f -Raw -Encoding UTF8 | ConvertFrom-Json
+        $out = @{}
+        foreach ($p in $d.PSObject.Properties) {
+            $out[$p.Name] = @{ thumb = $p.Value.thumb
+                               mtime = $p.Value.mtime
+                               size  = $p.Value.size }
+        }
+        return $out
+    } catch { return @{} }
+}
+
+function Save-JavaStoreState($map) {
+    $f = Join-Path $Root 'java-store-state.json'
+    try {
+        Write-TextNoBom $f ($map | ConvertTo-Json -Depth 4)
+    } catch { }
+}
+
 function Sync-JavaTrustStores($ca, $remove = $false) {
     <#
       把我们的 CA 导入 / 移出所有 JRE 的 cacerts。返回 (成功数, 总数, 明细)。
@@ -464,6 +571,8 @@ function Sync-JavaTrustStores($ca, $remove = $false) {
     # ★ 路径要自己从 $CertDir 推 —— $caCer 是 Ensure-Certs 里的**局部变量**,
     #   在这儿取不到（实测拿到空串, Copy-Item 报"参数是空值"）。
     $caCer = Join-Path $CertDir 'BSK-CA.cer'
+    $caThumb = if ($ca) { [string]$ca.Thumbprint } else { '' }
+    $jsDone = Get-JavaStoreState
 
     # ★ 再把 CA 复制到**纯 ASCII 的临时路径**喂给 keytool。
     #   证书本来在 `E:\DESKTOP\新建文件夹\...` —— 中文路径传给原生
@@ -483,15 +592,41 @@ function Sync-JavaTrustStores($ca, $remove = $false) {
     }
 
     $done = 0
+    $skipped = 0
     $detail = @()
+    $i = 0
     foreach ($cacerts in $stores) {
+        $i++
+        $short = $cacerts -replace [regex]::Escape($env:USERPROFILE), '~'
+
+        # ★ 快速跳过已处理过的: 每次检查/导入都要起一个 JVM（约 0.5~1 秒）,
+        #   30 个信任库就是半分钟。用 (CA 指纹 + 文件 mtime + 大小) 做标记,
+        #   三者都没变就说明上次导过了, 直接跳过 —— 不碰 keytool。
+        if (-not $remove) {
+            $mark = $jsDone[$cacerts]
+            if ($mark -and $mark.thumb -eq $caThumb) {
+                try {
+                    $fi = Get-Item $cacerts -ErrorAction Stop
+                    if ([string]$fi.LastWriteTimeUtc.Ticks -eq $mark.mtime -and
+                        [string]$fi.Length -eq $mark.size) {
+                        $done++
+                        $skipped++
+                        continue
+                    }
+                } catch { }
+            }
+        }
+
+        Write-Progress -Activity '安装证书到 Java 信任库' `
+                       -Status "$i / $($stores.Count)  $short" `
+                       -PercentComplete ([int](100 * $i / [Math]::Max(1, $stores.Count)))
+
         $kt = Get-KeytoolFor $cacerts
         if (-not $kt) {
-            $detail += "跳过（找不到 keytool）: $cacerts"
+            $detail += "跳过（找不到 keytool）: $short"
             continue
         }
         $exists = Test-CaInJavaStore $kt $cacerts
-        $short = $cacerts -replace [regex]::Escape($env:USERPROFILE), '~'
 
         if ($remove) {
             if (-not $exists) { $detail += "无需移除: $short"; continue }
@@ -502,7 +637,16 @@ function Sync-JavaTrustStores($ca, $remove = $false) {
             continue
         }
 
-        if ($exists) { $done++; $detail += "已有: $short"; continue }
+        if ($exists) {
+            $done++
+            try {
+                $fi = Get-Item $cacerts -ErrorAction Stop
+                $jsDone[$cacerts] = @{ thumb = $caThumb
+                                       mtime = [string]$fi.LastWriteTimeUtc.Ticks
+                                       size  = [string]$fi.Length }
+            } catch { }
+            continue
+        }
 
         # 备份（只备一次 —— 别把改动前的状态覆盖掉）
         $bak = "$cacerts.bsk-backup"
@@ -513,9 +657,22 @@ function Sync-JavaTrustStores($ca, $remove = $false) {
         $r = Invoke-Keytool $kt @('-importcert', '-noprompt', '-trustcacerts',
                                   '-alias', $JavaAlias, '-file', $asciiCer,
                                   '-keystore', $cacerts, '-storepass', 'changeit')
-        if ($r[0] -eq 0) { $done++; $detail += "已导入: $short" }
-        else { $detail += "★ 导入失败: $short  $($r[1].Trim())" }
+        if ($r[0] -eq 0) {
+            $done++
+            $detail += "已导入: $short"
+            try {
+                $fi = Get-Item $cacerts -ErrorAction Stop
+                $jsDone[$cacerts] = @{ thumb = $caThumb
+                                       mtime = [string]$fi.LastWriteTimeUtc.Ticks
+                                       size  = [string]$fi.Length }
+            } catch { }
+        } else {
+            $detail += "★ 导入失败: $short  $($r[1].Trim())"
+        }
     }
+    Write-Progress -Activity '安装证书到 Java 信任库' -Completed
+    Save-JavaStoreState $jsDone | Out-Null
+    if ($skipped -gt 0) { $detail += "（其中 $skipped 个上次已处理过, 直接跳过）" }
     return @($done, $stores.Count, $detail)
 }
 

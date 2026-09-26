@@ -157,37 +157,79 @@ javax.net.ssl.SSLHandshakeException:
 ### ② CA 必须导进**每个 JRE 自己的** `cacerts`
 
 Java 用的是 `<JRE>\lib\security\cacerts`，跟系统库毫无关系。
-而且启动器会带**好几份** JRE（实测 Lunar 自带 Java 25/17/21 三份，
-Prism 一份）—— 游戏用哪份是按版本挑的，**只导一份的话换个版本玩就又挂了**。
+而且启动器会带**好几份** JRE —— 游戏用哪份是按版本挑的，
+**只导一份的话换个版本玩就又挂了**。
 
-`拦截.cmd` 现在会自动扫描并导入（系统 Java + Lunar / Prism / MultiMC /
-CurseForge / Modrinth 等启动器的 JRE），改动前会备份成 `cacerts.bsk-backup`。
+`拦截.cmd` 会**全盘扫描**所有固定磁盘，找出每一个 `lib\security\cacerts` 并导入。
 
-> ⚠️ **必须用管理员身份跑「拦截」** —— `C:\Program Files\Java\...` 那些
-> 需要管理员权限才能写。脚本会自己弹 UAC，点「是」就行。
-> 哪个 JRE 没导成功，收尾时会明确列出来。
+> **为什么必须全盘扫**：第一版只扫了固定几个位置（Program Files 和
+> `%APPDATA%\.minecraft`），结果实测一台机器上有 **31 个** cacerts ——
+> 国内玩家的机器通常装了好几个启动器 / 整合包 / 客户端，每个自带 JRE，
+> 而且 `.minecraft` 经常在别的盘：
+>
+> ```
+> E:\DESKTOP\mc\.minecraft\runtime\jre-legacy\...      ← 官方启动器 1.8.9 用的
+> E:\DESKTOP\mc\.minecraft\runtime\java-runtime-*\...
+> E:\DESKTOP\mc\ViaProxy 一键启动\jdk-1.8\jre\...
+> D:\MCLDownload\ext\...   C:\MCLDownload\ext\...
+> ```
+>
+> 只扫固定位置的话，**游戏真正在用的那几个一个都扫不到** ——
+> 证书导了一堆没用的，游戏还是 PKIX 报错。
+
+扫描结果缓存 **24 小时**（第一次全盘扫约 1~2 分钟，之后 2 秒）。
+新装了启动器就 `.\bsk-proxy.ps1 拦截 -ForceRescan` 重扫。
+自动扫不到的地方，在 `config.json` 里加 `extraJavaRoots`：
+
+```json
+"extraJavaRoots": ["E:\\某个启动器", "D:\\另一个整合包"]
+```
+
+改动前每个 `cacerts` 都会备份成 `cacerts.bsk-backup`。
+
+> ⚠️ **必须用管理员身份跑「拦截」** —— `C:\Program Files\...` 里的需要管理员
+> 权限才能写。脚本会自己弹 UAC，点「是」就行。哪个没导成功，收尾会列出来。
 
 ### 验证 Java 那边到底通没通
 
-仓库里带了一个直接用 JVM 发请求的工具：
+仓库里带了两个直接用 JVM 发请求的工具：
+
+- `tests/JavaTlsTest.java` —— Java 9+
+- `tests/JavaTlsTest8.java` —— **只用 Java 8 的 API**（1.8.9 用的是 Java 8，
+  `readAllBytes()` 是 Java 9+ 的，在它上面编译不过）
 
 ```bash
-# 用 JDK 编译
-javac -d . tests/JavaTlsTest.java
+# Java 8 的要用 JDK 1.8 编译。★ 必须加 -encoding UTF-8，
+# 否则它的 javac 按 GBK 读源码，中文注释直接报"编码GBK的不可映射字符"
+"C:\Program Files\Java\jdk-1.8\bin\javac.exe" -encoding UTF-8 -d . tests/JavaTlsTest8.java
+
 # 用**游戏实际用的那个** JRE 跑
-"<JRE>\bin\java.exe" -cp . JavaTlsTest "https://api.hypixel.net/v2/resources/games" bsk_你的Key
+"E:\...\.minecraft\runtime\jre-legacy\bin\java.exe" -cp . JavaTlsTest8 "https://api.hypixel.net/v2/resources/games" bsk_你的Key
 ```
 
 通了就是：
 
 ```
 HTTP 200
+Java 1.8.0_51
 服务端证书 subject : CN=api.hypixel.net
 服务端证书 issuer  : CN=BSK Hypixel Local CA
 BODY {"success":true,...}
 ```
 
 失败会是 `PKIX path building failed`。
+
+### 已知的坑：Cloudflare 会拦 `Java/*` 这个 UA
+
+如果你的反代挂在 Cloudflare 后面、又开着 **Browser Integrity Check**，
+那么把 User-Agent 设成 Java 默认的 `Java/1.8.0_51` 会被 **403 error code 1010**。
+
+实测确认过（修好证书之后才暴露出来）：TLS 完全正常，纯粹是 CF 拦 UA。
+
+修法是在 CF 里加一条 WAF 规则，**只对 API 域名**跳过 BIC：
+`action = skip`，`products = ["bic"]`，
+表达式 `http.host in {"hyp-api.firebounce.today" "api.firebounce.today"}`。
+**别把整个 zone 的 BIC 关掉** —— 那是给浏览器站点用的保护，留着。
 
 ## 常见问题
 
