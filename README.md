@@ -1068,11 +1068,26 @@ https://api.firebounce.today/api/hypixel/v2/player?name=Notch   ← 等价
 
 ```bash
 curl -s 127.0.0.1:18096/health | python3 -m json.tool
-# "concurrency": {"limit": 20, "in_flight": 0, "peak": 20, "rejected": 166}
+# "concurrency": {"limit": 20, "src": "env", "in_flight": 0, "peak": 20, "rejected": 166}
 ```
 
 `peak` 长期贴着 `limit` 就说明该调大；`rejected` 一直在涨而 `peak` 没到
 `limit`，那是别的层在拦。
+
+**不用登服务器也能调** —— 管理员在群里发一条指令，**立刻生效、不用重启**
+（打满的那一刻正是不能重启的时刻，所以这条特意做成热改的）：
+
+```
+/并发              看当前上限 + 水位（正在处理 / 历史峰值 / 被拒次数）
+/并发 50           改成 50
+/并发 0            不限（危险：线程无上限）
+/并发 off          删掉这个设定，回到环境变量 QQBOT_MAX_CONCURRENCY
+```
+
+别名的写法也认：`/并发数`、`/conc`、`/concurrency`。
+
+优先级：**群里设的 > 环境变量 `QQBOT_MAX_CONCURRENCY` > 代码默认 20**。
+群里设的会落盘到 `rate_limits.json`（跟额度配置同一个文件），重启后还在。
 三个认证方式**任选其一**即可：
 
 ```bash
@@ -1214,6 +1229,7 @@ print(r.json()["player"]["displayname"])
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-26 | **新增 `/并发` 指令 —— 管理员在群里改并发上限，立刻生效不用重启**。`/并发` 看当前值 + 水位（正在处理 / 历史峰值 / 被拒次数 / 被拒次数里"峰值贴到上限"的提醒），`/并发 <N>` 改，`/并发 0` 不限，`/并发 off` 删掉设定回到环境变量。别名 `/并发数`、`/conc`、`/concurrency`。优先级 **群里设的 > 环境变量 `QQBOT_MAX_CONCURRENCY` > 默认 20**，群里设的落盘到 `rate_limits.json`（跟额度配置同文件）所以重启后还在。做这个是因为"并发上限"是最需要**边看水位边调**的东西，而打满的那一刻正是不能重启的时刻 —— 只能改环境变量+重启的话等于没用。`/health` 的 `concurrency` 也补了 `src` / `env_default`，一眼看出当前值是哪来的 |
 | 2026-09-26 | **限流改成「并发上限 + 每分钟」两层，并把 nginx 那层从 `hyp-api` 删掉**。`hyp-api` 上的 nginx `limit_req`（20 req/s 每 IP）已移除，统一交给服务进程的**并发闸门** `QQBOT_MAX_CONCURRENCY`（默认 **20**，可调；`0` = 不限）。换成并发而不是速率的原因是：服务是 `ThreadingHTTPServer`，**每个请求开一个线程**，并发数本来没有上限 —— 一瞬间几千个请求就真去开几千个线程把内存吃光，而"每秒 N 次"的速率限制**看不见**这一点（它只管新请求来得多快，不管同时有多少还在跑）。满员时直接回 `429`（不排队 —— 排队会让延迟雪崩，而且排队的请求本身还占着连接和线程）。反代路径回 Hypixel 形状、本站 API 回 `{ok:false}`，两条路径分开不串味。水位可以从 `/health` 的 `concurrency: {limit, in_flight, peak, rejected}` 看。实测并发 60 打 200 发：`peak` 正好卡在 20 从没超，166 个 429 的 `cause` 都写明 `concurrency limit of 20` 且**明确不是你的 Key**。`hyp.firebounce.today` 和 GitHub webhook 的 nginx 限流**保留不动**（用户指定只删 api 端点那个）—— 它们上次补的 `limit_req_status 429` + JSON error_page 也保留，那是"别回 503 HTML"的修复 |
 | 2026-09-26 | **修两个限流 bug（压测暴露的）**。① **nginx 边缘限流回的是 `503` + 一页 HTML**：`hypapi` / `denick-api` / `hyp-web` 三个站点用了 `limit_req` 却都没设 `limit_req_status` —— nginx 默认值是 503（仓库里 southside / namewall 都设了 429，这三个当初漏了）。后果是状态码语义全错（503 = "服务器挂了"，重试库和监控都会当真故障）**而且**反代"只改 base url 就能用、返回和 Hypixel 一样"的承诺当场作废 —— 按 `{success,cause}` 解析的客户端会拿到 HTML。现在三个站点都设了 429，并用 `error_page 429` 让 nginx 自己的限流也回 JSON（`proxy_intercept_errors` 默认 off，所以**不会**盖掉上游 Python 那几种 429 的 cause）。② **反代跟 `/api/player` 共用同一个全局 90/分钟闸门**：那个闸门是给要真打 Hypixel/Urchin 的重接口准备的，全局不分人 —— 于是反代卖着"多把 Key 叠加额度"（3 把 = 900/分钟）却卡在 90/分钟，而且网站一忙反代跟着一起挂。实测压测 120 发里 30 发是 `Server is busy (global throttle)`。现在拆成独立一档 `QQBOT_PROXY_RATE`（默认 600/分钟），并把 `cause` 改成明确说"这是反代侧的突发限流，不是你的 Key"。修完复测：300 发并发里**零**个应用侧 429，非 200 全部是 nginx 边缘限流，形状正确 |
 | 2026-09-26 | **修 `/api/hypixel` 别名（原来五种形态全 404）**：文档和 `/api` 清单里一直列着这个别名，但它**从来没成功过一次**。两个原因叠在一起：① 反代处理函数**不管从哪进来的都读 `self.path`**，于是 `/api/hypixel/v2/status` 把整串（含 `/api/hypixel` 前缀）丢给上游 → 上游 404；② 带后缀的形态**先撞上版本路由**，被解析成「端点=hypixel，版本=v2/status」→ 本站 404 未知版本，根本走不到反代那段代码。现在在版本路由**之前**拦下 `/api/hypixel(/*)`，剥掉前缀交给反代。顺带修掉两个附带毛病：裸调 `/api/hypixel` 以前兜底成 `/v2` 让上游回一个看不懂的 404，现在直接回一段说明 JSON（不消耗上游额度）；少写 `/v2` 的形态（`/api/hypixel/player?name=X`）以前会 `path = "/v2"` **把子路径整个丢掉**变成 `/v2?name=X` → 上游 `Unknown endpoint`，现在是**补上** `/v2` 得到 `/v2/player?name=X`。线上实测五种形态全通，且与 `hyp-api` 直连**字节级一致**（7741 B / 85 B / 23981 B 三样本 `BODY_IDENTICAL=True`）。反代返回格式**一个字没动** |
