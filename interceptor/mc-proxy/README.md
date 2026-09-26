@@ -320,6 +320,7 @@ mc-proxy/
   `api.hypixel.net`）打过去 ✓
 - `/v2/player?uuid=...` 返回 200，**query 原样保留** ✓
 - 日志显示 `[已注入 Key bsk_efbb…b398]` ✓
+- `?key=<别人自己的key>` 被**剥掉**、照样 200 ✓（见下面那条坑）
 - 恢复：停进程 + 删 hosts 行 + 清 PID ✓
 
 跑测试客户端：
@@ -327,6 +328,41 @@ mc-proxy/
 ```bash
 node tests/test_client.mjs 8443 "/v2/player?uuid=<某个UUID>"
 ```
+
+纯函数（不改 key / 注入 key 的规则）有单测，**不需要网络也不需要证书**：
+
+```bash
+node tests/test_stripkey.mjs     # 25 项
+```
+
+---
+
+## 踩过的坑（都写了回归测试）
+
+**`stripKeyFromQuery` 曾经完全没生效，而且是静默的。**
+很多模组把 Key 拼在 URL 里：`/v2/player?key=<它自己的 Hypixel Key>&name=xxx`，
+而反代**认 URL 参数优先于请求头** —— 不剥掉就是每次 401
+（`Invalid API key. This key was not issued by ...`）。
+当时写的是 `new URL(rawUrl)`，可 Node 的 http server 给的是**纯路径**
+（`/v2/player?key=x`，没有 scheme/host），`new URL` 直接抛 `Invalid URL`，
+外层 try/catch 一兜就 `return rawUrl` —— 于是"剥 key"从来没执行过。
+更坑的是**日志看正常**（日志打的是剥离前的原始 URL），只有返回 401 才露馅。
+现在改成按 `&` 逐段字符串处理，**不做 URLSearchParams 编解码**
+（那会把空格变成 `+`、重排参数，就不是"原样透传"了）。
+
+**`bsk-proxy.ps1` 发现 443 被占就直接放弃，却照样打印绿色的「拦截已开启」。**
+代理是常驻进程，改了 `proxy.js` 之后重跑「拦截」本该自动换新，但它只是警告一句
+"先跑一次恢复再试"，于是"我更新了代码怎么没生效"变成一个查不出来的坑。
+现在：443 上那个进程如果**确认是我们上次拉的**（PID 文件对得上，或命令行里有
+`proxy.js`）就自动停掉再拉新的；**不是我们的一律不动**，如实报错。
+另外代理没起来时不再打印绿色的「已开启」—— hosts 确实改好了，可本机没人在听 443，
+这期间的请求是直接失败的，界面必须说实话。
+
+**提权启动的代理，非提权会话读不到它的命令行。**
+`Get-ProxyProcess` 原本要求命令行里能看到 `proxy.js`，读不到就 `return $null` ——
+于是「恢复」眼睁睁看着旧代理占着 443，却报"没有正在跑的代理"。
+现在命令行**读不到**时改认 PID 文件（那是 `proxy.js` 自己写的，证据足够），
+只有命令行**读得到且不匹配**才否定。
 
 ---
 

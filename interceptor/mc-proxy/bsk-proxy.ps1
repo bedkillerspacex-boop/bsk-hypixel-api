@@ -776,8 +776,20 @@ function Get-ProxyProcess {
     if (-not $proc -or $proc.ProcessName -ne 'node') { return $null }
 
     $ci = Get-CimInstance Win32_Process -Filter "ProcessId=$pidNum" -ErrorAction SilentlyContinue
-    if ($ci -and $ci.CommandLine -and $ci.CommandLine -like '*proxy.js*') { return $proc }
-    return $null
+    $cmd = $null
+    if ($ci) { $cmd = $ci.CommandLine }
+
+    if ($cmd) {
+        # 命令行读得到 -> 必须真的写着 proxy.js, 否则就是个碰巧拿到同号 PID 的 node。
+        if ($cmd -like '*proxy.js*') { return $proc }
+        return $null
+    }
+
+    # ★ 命令行**读不到** (返回空) 的情况: 提权启动的进程在非提权会话里就是这样。
+    #   以前这里直接 return $null, 于是「恢复」眼睁睁看着旧代理占着 443 却报
+    #   "没有正在跑的代理", 代理也永远重启不了 (实测踩到)。
+    #   PID 文件是 proxy.js 自己写的, 这一条证据已经足够 —— 认它。
+    return $proc
 }
 
 function Get-StrayProxies {
@@ -817,16 +829,69 @@ function Test-Port443Busy {
     return [bool]$c
 }
 
+function Get-Port443Owner {
+    $c = Get-NetTCPConnection -LocalPort 443 -State Listen -ErrorAction SilentlyContinue
+    if (-not $c) { return $null }
+    return ($c | Select-Object -First 1).OwningProcess
+}
+
+function Test-OurProxy($procId) {
+    <#
+      443 上那个进程是不是**我们自己上次拉的代理**？
+
+      ★ 为什么要单独判一次: 用户改了 proxy.js 之后再跑一遍「拦截」是最常见的操作,
+        但代理是常驻进程 —— 只覆盖文件不会让它用上新代码。要能自动重启它, 就得分清
+        "是我们上次拉的" 和 "别人占着 443 的无关程序", 后者绝不能杀。
+
+      两条独立的证据, 满足任意一条即认:
+        · proxy.pid 里写的 PID 就是它 (proxy.js 自己写的, 最权威);
+        · 它的命令行里有 proxy.js。
+      注意: 提权启动的进程, 非提权会话**读不到 CommandLine** (返回空),
+      所以不能只靠第二条 —— 实测就是这么漏掉的。
+    #>
+    if (-not $procId) { return $false }
+
+    if (Test-Path $PidFile) {
+        $p = (Get-Content $PidFile -Raw -ErrorAction SilentlyContinue)
+        $pidNum = 0
+        if ($p -and [int]::TryParse($p.Trim(), [ref]$pidNum) -and $pidNum -eq $procId) {
+            return $true
+        }
+    }
+
+    $ci = Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction SilentlyContinue
+    if ($ci -and $ci.CommandLine -and $ci.CommandLine -like '*proxy.js*') { return $true }
+
+    return $false
+}
+
 function Start-Proxy {
-    if ($NoStart) { Info '（-NoStart：不启动代理）'; return }
+    <# 返回 $true = 真的监听上了, $false = 没起来 (调用方据此决定要不要报"已开启")。 #>
+    if ($NoStart) { Info '（-NoStart：不启动代理）'; return $true }
 
     if (Test-Port443Busy) {
-        $owner = (Get-NetTCPConnection -LocalPort 443 -State Listen -ErrorAction SilentlyContinue |
-                  Select-Object -First 1).OwningProcess
+        $owner = Get-Port443Owner
         $name = (Get-Process -Id $owner -ErrorAction SilentlyContinue).ProcessName
-        Warn "本机 443 端口已被占用（PID $owner / $name）—— 代理起不来"
-        Info '如果是上次残留的 node，先跑一次「恢复」再试。'
-        return
+
+        if (Test-OurProxy $owner) {
+            # ★ 以前这里直接放弃并警告"先跑一次恢复再试"，可用户只是想**更新代码** ——
+            #   于是"我换了 proxy.js 怎么没生效"变成一个查不出来的坑 (实测踩到)。
+            #   自己上次拉的代理, 直接停掉换新的就行。
+            Info "发现上次的代理还占着 443 (PID $owner)，先停掉再拉新的（这样才会用上最新的 proxy.js）…"
+            Stop-Process -Id $owner -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 600
+            Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
+            if (Test-Port443Busy) {
+                Start-Sleep -Milliseconds 900
+            }
+        }
+
+        if (Test-Port443Busy) {
+            Warn "本机 443 端口已被占用（PID $owner / $name）—— 代理起不来"
+            Info '这个进程不是我们拉的代理，不敢动它。请先关掉它（或改 config.json 的 listenPort）再试。'
+            return $false
+        }
+        Ok "旧的代理已停 (PID $owner)"
     }
 
     $node = (Get-Command node -ErrorAction SilentlyContinue)
@@ -854,7 +919,7 @@ function Start-Proxy {
             $ownerPid = (Get-NetTCPConnection -LocalPort 443 -State Listen -ErrorAction SilentlyContinue |
                          Select-Object -First 1).OwningProcess
             Ok "代理已监听 127.0.0.1:443 (PID $ownerPid)"
-            return
+            return $true
         }
         if ($proc.HasExited) { break }
     }
@@ -897,6 +962,7 @@ function Start-Proxy {
     }
     Write-Host ''
     Info '改完再跑一次「拦截」即可；配置坏了就删掉 config.json 让它重建。'
+    return $false
 }
 
 # ---- 三个动作 --------------------------------------------------------------
@@ -952,18 +1018,28 @@ function Do-拦截 {
     Clear-DnsCache
 
     Step '6/6 启动代理'
-    Start-Proxy
+    $started = Start-Proxy
 
     Write-Host ''
-    Write-Host '----------------------------------------------------------------' -ForegroundColor Green
-    Write-Host '  拦截已开启' -ForegroundColor Green
-    Write-Host '----------------------------------------------------------------' -ForegroundColor Green
-    Info "$TARGET_HOST 现在指向本机，由本地代理转发到反代"
-    if (-not $cfg.apiKey) { Warn '还没填 Key —— 编辑 config.json 里的 apiKey 再重启代理' }
-    Info "hosts 备份: $bak"
-    Write-Host ''
-    Info '★ 记得**重启 Minecraft**（Java 有 DNS 缓存, 不重启可能还在连旧地址）'
-    Info '要还原就双击「恢复.cmd」（或 .\bsk-proxy.ps1 恢复）'
+    if ($started) {
+        Write-Host '----------------------------------------------------------------' -ForegroundColor Green
+        Write-Host '  拦截已开启' -ForegroundColor Green
+        Write-Host '----------------------------------------------------------------' -ForegroundColor Green
+        Info "$TARGET_HOST 现在指向本机，由本地代理转发到反代"
+        if (-not $cfg.apiKey) { Warn '还没填 Key —— 编辑 config.json 里的 apiKey 再重启代理' }
+        Info "hosts 备份: $bak"
+        Write-Host ''
+        Info '★ 记得**重启 Minecraft**（Java 有 DNS 缓存, 不重启可能还在连旧地址）'
+        Info '要还原就双击「恢复.cmd」（或 .\bsk-proxy.ps1 恢复）'
+    } else {
+        # ★ 以前不管起没起来都打印绿色的「拦截已开启」—— hosts 确实改好了, 但代理没跑,
+        #   于是所有 api.hypixel.net 请求直接失败, 而界面说"已开启"。现在说实话。
+        Write-Host '----------------------------------------------------------------' -ForegroundColor Yellow
+        Write-Host '  hosts 已改好，但代理没起来' -ForegroundColor Yellow
+        Write-Host '----------------------------------------------------------------' -ForegroundColor Yellow
+        Warn "$TARGET_HOST 现在指向本机，可本机没人在听 443 —— 这期间的请求会直接失败。"
+        Info '先解决上面那个问题，再跑一次「拦截」；要放弃就双击「恢复.cmd」。'
+    }
     Write-Host ''
 }
 

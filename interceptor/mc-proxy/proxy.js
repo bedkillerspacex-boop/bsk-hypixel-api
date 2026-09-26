@@ -38,22 +38,27 @@ const util = require('util');
 // ---- 参数 ----------------------------------------------------------------
 
 const cfgPath = process.argv[2];
-if (!cfgPath) {
-  console.error('用法: node proxy.js <config.json>');
-  process.exit(2);
-}
 
-let cfg;
-try {
-  let raw = fs.readFileSync(cfgPath, 'utf8');
-  // ★ 去掉 UTF-8 BOM —— Windows PowerShell 的 `Set-Content -Encoding UTF8`
-  //   会写 BOM, 而 JSON.parse 遇到 BOM 直接抛 "Unexpected token"。
-  //   脚本那边已经改成不写 BOM 了, 这里再兜一层（用户手工编辑过也会中招）。
-  if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
-  cfg = JSON.parse(raw);
-} catch (e) {
-  console.error('读不到配置文件: ' + cfgPath + ' — ' + e.message);
-  process.exit(2);
+// ★ 配置读取只在**直接被运行**时做。被 `require()` 时(单测)跳过 ——
+//   否则测试进程的 argv[2] 是测试文件名, 会被当成 config 路径而 process.exit(2),
+//   或者因为没有证书直接退出, 根本走不到被测的纯函数。
+let cfg = {};
+if (require.main === module) {
+  if (!cfgPath) {
+    console.error('用法: node proxy.js <config.json>');
+    process.exit(2);
+  }
+  try {
+    let raw = fs.readFileSync(cfgPath, 'utf8');
+    // ★ 去掉 UTF-8 BOM —— Windows PowerShell 的 `Set-Content -Encoding UTF8`
+    //   会写 BOM, 而 JSON.parse 遇到 BOM 直接抛 "Unexpected token"。
+    //   脚本那边已经改成不写 BOM 了, 这里再兜一层（用户手工编辑过也会中招）。
+    if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
+    cfg = JSON.parse(raw);
+  } catch (e) {
+    console.error('读不到配置文件: ' + cfgPath + ' — ' + e.message);
+    process.exit(2);
+  }
 }
 
 const CFG = Object.assign({
@@ -124,22 +129,27 @@ function mask(k) {
 }
 
 // ---- 证书 ----------------------------------------------------------------
+//
+// ★ 同样挪进函数: 只在真正要监听端口时才需要证书。
+//   放在模块顶层的话, `require('./proxy.js')` 会因为找不到证书 process.exit(3)。
 
-if (!CFG.pfX || !fs.existsSync(CFG.pfX)) {
-  console.error('找不到证书文件: ' + CFG.pfX);
-  console.error('请先用 bsk-proxy.ps1 生成（拦截开关会自动做）。');
-  process.exit(3);
-}
+let secureCtx = null;
 
-let secureCtx;
-try {
-  secureCtx = tls.createSecureContext({
-    pfx: fs.readFileSync(CFG.pfX),
-    passphrase: CFG.pfxPass,
-  });
-} catch (e) {
-  console.error('加载证书失败: ' + e.message);
-  process.exit(3);
+function loadCerts() {
+  if (!CFG.pfX || !fs.existsSync(CFG.pfX)) {
+    console.error('找不到证书文件: ' + CFG.pfX);
+    console.error('请先用 bsk-proxy.ps1 生成（拦截开关会自动做）。');
+    process.exit(3);
+  }
+  try {
+    return tls.createSecureContext({
+      pfx: fs.readFileSync(CFG.pfX),
+      passphrase: CFG.pfxPass,
+    });
+  } catch (e) {
+    console.error('加载证书失败: ' + e.message);
+    process.exit(3);
+  }
 }
 
 // ---- 转发 ----------------------------------------------------------------
@@ -192,19 +202,32 @@ function buildHeaders(srcHeaders) {
  */
 function stripKeyFromQuery(rawUrl) {
   if (!CFG.forceKey) return rawUrl;
-  try {
-    const u = new URL(rawUrl);
-    let changed = false;
-    for (const name of ['key', 'apikey']) {
-      if (u.searchParams.has(name)) {
-        u.searchParams.delete(name);
-        changed = true;
-      }
-    }
-    return changed ? u.toString() : rawUrl;
-  } catch (e) {
-    return rawUrl;
-  }
+
+  // ★ 千万别用 `new URL(rawUrl)` —— Node 的 http server 给的是**纯路径**
+  //   (`/v2/player?key=x`), 没有 scheme/host, `new URL` 会直接抛
+  //   `Invalid URL`。老代码外面裹了个 try/catch 就 return rawUrl,
+  //   于是"剥 key"从来没生效过, 而且**静默** —— 日志里照样打印原始 URL,
+  //   看起来一切正常, 只有返回是 401 才露馅 (实测就是这么被绕过去的)。
+  const q = rawUrl.indexOf('?');
+  if (q < 0) return rawUrl;
+
+  const path = rawUrl.slice(0, q);
+  const query = rawUrl.slice(q + 1);
+  if (!query) return rawUrl;
+
+  // 按 `&` 切开**逐段原样保留**, 不做 URLSearchParams 编解码 ——
+  // 那会把空格变成 `+`、重排参数, 就不是"原样透传"了。
+  const parts = query.split('&');
+  const kept = parts.filter((part) => {
+    const raw = part.split('=')[0];
+    let name = raw;
+    try { name = decodeURIComponent(raw.replace(/\+/g, ' ')); } catch (e) { /* 解不开就按原样比 */ }
+    name = name.toLowerCase();
+    return name !== 'key' && name !== 'apikey';
+  });
+  if (kept.length === parts.length) return rawUrl;
+
+  return kept.length ? path + '?' + kept.join('&') : path;
 }
 
 function forward(req, res) {
@@ -269,67 +292,79 @@ function forward(req, res) {
 
 // ---- 服务 ----------------------------------------------------------------
 
-const server = https.createServer({
-  // 单域名拦截：hosts 只把那一个域名指过来，所以固定用那张证书就行。
-  // 用 SNICallback 再兜一层，别的 SNI 直接拒掉（不该出现，出现就是有人在探测）。
-  SNICallback: (servername, cb) => {
-    const want = String(CFG.serverName || '').toLowerCase();
-    const got = String(servername || '').toLowerCase();
-    if (got && got !== want) {
-      log('★ 收到非目标 SNI: ' + got + ' —— 拒绝');
-      return cb(new Error('unexpected SNI: ' + got));
+function main() {
+  secureCtx = loadCerts();
+
+  const server = https.createServer({
+    // 单域名拦截：hosts 只把那一个域名指过来，所以固定用那张证书就行。
+    // 用 SNICallback 再兜一层，别的 SNI 直接拒掉（不该出现，出现就是有人在探测）。
+    SNICallback: (servername, cb) => {
+      const want = String(CFG.serverName || '').toLowerCase();
+      const got = String(servername || '').toLowerCase();
+      if (got && got !== want) {
+        log('★ 收到非目标 SNI: ' + got + ' —— 拒绝');
+        return cb(new Error('unexpected SNI: ' + got));
+      }
+      return cb(null, secureCtx);
+    },
+  }, forward);
+
+  server.on('clientError', (err, socket) => {
+    // 探测/半开连接很常见，别刷屏
+    if (socket.writable) {
+      try { socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); } catch (e) {}
     }
-    return cb(null, secureCtx);
-  },
-}, forward);
+  });
 
-server.on('clientError', (err, socket) => {
-  // 探测/半开连接很常见，别刷屏
-  if (socket.writable) {
-    try { socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); } catch (e) {}
+  server.on('error', (e) => {
+    if (e.code === 'EADDRINUSE') {
+      console.error('端口 ' + CFG.listenPort + ' 已被占用 —— 是不是已经有一个在跑？');
+      console.error('先跑「恢复.cmd」，或者去任务管理器结束 node.exe。');
+    } else if (e.code === 'EACCES') {
+      console.error('没有权限监听 ' + CFG.listenHost + ':' + CFG.listenPort +
+                    ' —— 请用管理员身份运行。');
+    } else {
+      console.error('启动失败: ' + e.message);
+    }
+    process.exit(1);
+  });
+
+  server.listen(CFG.listenPort, CFG.listenHost, () => {
+    log('==================================================');
+    log('BSK 本地反代已启动');
+    log('  监听    : ' + CFG.listenHost + ':' + CFG.listenPort);
+    log('  拦截域名: ' + CFG.serverName + '  (由 hosts 指过来)');
+    log('  转发到  : ' + CFG.proxyBase);
+    log('  Key     : ' + mask(CFG.apiKey) + (CFG.forceKey ? '  (强制覆盖)' : ''));
+    log('  证书    : ' + CFG.pfX);
+    log('==================================================');
+    log('保持这个窗口开着。关掉窗口 = 拦截停止（记得跑「恢复.cmd」改回 hosts）。');
+
+    // ★ 就绪信号必须放在 listen 回调里 —— 放在外面的话它会在**真正开始监听之前**
+    //   就打印出来, 上层脚本据此判断"起来了"就会误判（端口还没绑上）。
+    writePid();
+    process.stdout.write('BSK_PROXY_READY ' + JSON.stringify({
+      port: CFG.listenPort, host: CFG.listenHost, pid: process.pid,
+    }) + '\n');
+  });
+
+  function shutdown(sig) {
+    log('收到 ' + sig + '，正在退出…');
+    clearPid();
+    try { server.close(); } catch (e) {}
+    if (logStream) { try { logStream.end(); } catch (e) {} }
+    process.exit(0);
   }
-});
-
-server.on('error', (e) => {
-  if (e.code === 'EADDRINUSE') {
-    console.error('端口 ' + CFG.listenPort + ' 已被占用 —— 是不是已经有一个在跑？');
-    console.error('先跑「恢复.cmd」，或者去任务管理器结束 node.exe。');
-  } else if (e.code === 'EACCES') {
-    console.error('没有权限监听 ' + CFG.listenHost + ':' + CFG.listenPort +
-                  ' —— 请用管理员身份运行。');
-  } else {
-    console.error('启动失败: ' + e.message);
-  }
-  process.exit(1);
-});
-
-server.listen(CFG.listenPort, CFG.listenHost, () => {
-  log('==================================================');
-  log('BSK 本地反代已启动');
-  log('  监听    : ' + CFG.listenHost + ':' + CFG.listenPort);
-  log('  拦截域名: ' + CFG.serverName + '  (由 hosts 指过来)');
-  log('  转发到  : ' + CFG.proxyBase);
-  log('  Key     : ' + mask(CFG.apiKey) + (CFG.forceKey ? '  (强制覆盖)' : ''));
-  log('  证书    : ' + CFG.pfX);
-  log('==================================================');
-  log('保持这个窗口开着。关掉窗口 = 拦截停止（记得跑「恢复.cmd」改回 hosts）。');
-
-  // ★ 就绪信号必须放在 listen 回调里 —— 放在外面的话它会在**真正开始监听之前**
-  //   就打印出来, 上层脚本据此判断"起来了"就会误判（端口还没绑上）。
-  writePid();
-  process.stdout.write('BSK_PROXY_READY ' + JSON.stringify({
-    port: CFG.listenPort, host: CFG.listenHost, pid: process.pid,
-  }) + '\n');
-});
-
-function shutdown(sig) {
-  log('收到 ' + sig + '，正在退出…');
-  clearPid();
-  try { server.close(); } catch (e) {}
-  if (logStream) { try { logStream.end(); } catch (e) {} }
-  process.exit(0);
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  // 正常退出（含被 Stop-Process 强杀前的清理机会）也把 PID 文件收掉
+  process.on('exit', clearPid);
 }
-process.on('SIGINT', () => shutdown('SIGINT'));
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-// 正常退出（含被 Stop-Process 强杀前的清理机会）也把 PID 文件收掉
-process.on('exit', clearPid);
+
+// ★ 只有被**直接运行**时才起服务。被 require 时只导出纯函数, 好让单测能
+//   单独验 `stripKeyFromQuery` / `buildHeaders` —— 这两个是"看起来对、其实是坏的"
+//   重灾区 (stripKeyFromQuery 就因为 `new URL(纯路径)` 抛异常而**静默**失效过)。
+if (require.main === module) {
+  main();
+}
+module.exports = { stripKeyFromQuery, buildHeaders, main, CFG };
