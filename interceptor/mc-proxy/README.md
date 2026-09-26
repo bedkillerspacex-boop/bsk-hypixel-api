@@ -190,6 +190,51 @@ Java 用的是 `<JRE>\lib\security\cacerts`，跟系统库毫无关系。
 > ⚠️ **必须用管理员身份跑「拦截」** —— `C:\Program Files\...` 里的需要管理员
 > 权限才能写。脚本会自己弹 UAC，点「是」就行。哪个没导成功，收尾会列出来。
 
+### ③ 有些客户端每次启动都会把 JRE **重铺一遍** —— 往它里面导证书永远是白干
+
+**Lunar Client 就是这样。** 每次启动游戏，它都把自带的 JRE 重新铺开：
+`<lunar>\jre\<hash>\zulu*\lib\security\` 整个目录（连 `cacerts` /
+`blocked.certs` / `default.policy`）时间戳被刷成启动那一秒。实测时间线：
+
+| 时间 | 事件 |
+|---|---|
+| 13:07 | 把 CA 导进 Lunar 的 zulu17 → `cacerts` 变成 123740 字节 |
+| 13:08 | 用同一个 JRE 跑探针 → `HTTP 200`，PKIX 消失（**那时还没开游戏**） |
+| 18:19 | Lunar 启动游戏 → 目录被重铺，`cacerts` 缩回 122913 字节、别名没了 |
+| 18:20 | 游戏里 `PKIX path building failed` → `[Meow] Failed to fetch bedwars stats` |
+
+也就是说 13:08 那次"成功"**只是因为游戏还没重启**。这条路走不通。
+
+**解法：另建一个不会被重铺的信任库**，再用 `JAVA_TOOL_OPTIONS` 让所有 JVM 都用它。
+`拦截.cmd` 现在会自动做这件事：
+
+```
+独立信任库 : C:\ProgramData\BSK-Hypixel\cacerts-jks     （109 个公共根 + 我们的 CA）
+用户级环境 : JAVA_TOOL_OPTIONS = -Djavax.net.ssl.trustStore=<上面那个> \
+                                 -Djavax.net.ssl.trustStorePassword=changeit \
+                                 -Djavax.net.ssl.trustStoreType=JKS
+```
+
+不动 Lunar 的任何设置，**重启游戏就生效**。同时 `拦截` 会**跳过** Lunar 的 JRE
+（导了也白导，省时间，也不再打印误导性的"已导入"）。
+
+两个约束是实测踩出来的，别改：
+
+- **路径必须纯 ASCII。** mc-proxy 本身常常装在中文路径下（这台机器上就是
+  `E:\DESKTOP\新建文件夹\…`），而 `-Djavax.net.ssl.trustStore=<中文路径>`
+  会因为代码页转换坏掉 —— `keytool` 已经被同一个坑坑过一次。`ProgramData`
+  在 Windows 上恒为 ASCII，所以放那儿；要换位置就在 `config.json` 里加
+  `javaTrustStore`。
+- **格式必须 JKS。** Java 8 读不了新 JDK 生成的 PKCS12 默认库，
+  实测报 `NoSuchAlgorithmException`。所以导入完还要 `-importkeystore` 转一次。
+
+> **重启 Lunar 要连启动器一起退。** 游戏 JVM 继承的是**启动器**的环境变量；
+> 启动器如果是在设 `JAVA_TOOL_OPTIONS` 之前打开的，它那份环境里没有这一项，
+> 直接开游戏照样 PKIX。启动器含托盘/后台进程。
+
+`拦截` 会把这件事的成败显示在收尾信息里，`状态.cmd` 也会单独报一行
+（`Java信任库: 就绪 / 还没建`）。**下次游戏里再报 PKIX，先看这一行。**
+
 ### 验证 Java 那边到底通没通
 
 仓库里带了两个直接用 JVM 发请求的工具：
@@ -333,7 +378,17 @@ node tests/test_client.mjs 8443 "/v2/player?uuid=<某个UUID>"
 
 ```bash
 node tests/test_stripkey.mjs     # 25 项
+python tests/test_interceptor.py # 29 项（含 Windows 编码地雷的回归）
 ```
+
+Lunar 那条链路真跑过（用模组那种 `?key=<真 key>&name=` 形态）：
+
+| JRE | 结果 |
+|---|---|
+| Lunar 自带 `zulu17.64.17` | `HTTP 200`，签发者 `CN=BSK Hypixel Local CA` |
+| 1.8.9 的 `jre-legacy`（Java 1.8.0_51） | `HTTP 200`，同上 |
+
+两者都用**独立信任库**（JKS 格式，Java 8 也读得了），跟 Lunar 的 JRE 无关。
 
 ---
 
@@ -363,6 +418,24 @@ node tests/test_stripkey.mjs     # 25 项
 于是「恢复」眼睁睁看着旧代理占着 443，却报"没有正在跑的代理"。
 现在命令行**读不到**时改认 PID 文件（那是 `proxy.js` 自己写的，证据足够），
 只有命令行**读得到且不匹配**才否定。
+
+**客户端因为不信任证书而中止握手时，代理日志里一个字都没有。**
+`tlsClientError` 没接 —— 握手失败就不会有 HTTP 请求，业务日志自然一片空白。
+于是"游戏里 PKIX"在代理这边**完全看不到证据**，只能靠猜（Lunar 那次就是这么
+查了一下午：日志干干净净，看起来像"拦截器根本没生效"）。
+现在接了 `tlsClientError`，会打出 `★ TLS 握手失败 [<SNI>]: <原因>` 和一句怎么办。
+
+**`Ensure-JavaTrustStore` 第一次跑必然失败：`别名 <bsk-hypixel-local-ca> 已经存在`。**
+底料是从机器上随便一个 `cacerts` 拷的，而 `Sync-JavaTrustStores` 之前已经往
+**所有** JRE 里导过我们的 CA。修法是**先 `-delete` 再 `-importcert`** ——
+顺带也解决了 CA 轮换（旧 CA 会被换成新的）。
+
+**含中文的 `.ps1` 一旦丢了 UTF-8 BOM，整份脚本语法错乱。**
+Windows PowerShell 按 ANSI 读无 BOM 的文件，中文字节被解成别的字符，
+只要解出一个引号，字符串就错位了。实测报 20+ 处语法错误、完全跑不起来。
+编辑器/工具在改文件时很容易把 BOM 吃掉 —— 所以钉了回归测试
+（`interceptor/tests/test_interceptor.py::FileEncodingTest`）看着它。
+同理 `.cmd` 必须纯 ASCII：`cmd.exe` 按 OEM 代码页读，中文会乱码并可能拆坏命令。
 
 ---
 

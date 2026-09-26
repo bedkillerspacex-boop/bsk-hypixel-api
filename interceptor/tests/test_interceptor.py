@@ -259,5 +259,52 @@ class LivePatchTest(unittest.TestCase):
         self.assertEqual(bsk.stats()["config"]["api_key"], "bsk_OUTER")
 
 
+class FileEncodingTest(unittest.TestCase):
+    """Windows 上的编码地雷，全部实测炸过，所以钉成测试。
+
+    1) 含中文的 `.ps1` **必须带 UTF-8 BOM**。
+       Windows PowerShell 读无 BOM 的文件时按 ANSI(GBK) 解 —— 中文字节会被
+       解成别的字符，如果恰好解出个引号，整份脚本的字符串就错位了。
+       实测：BOM 一旦丢掉，`bsk-proxy.ps1` 报 20+ 处语法错误、完全跑不起来。
+       而编辑器/工具在改文件时很容易把 BOM 吃掉（这个坑踩过不止一次）。
+
+    2) `.cmd` **必须纯 ASCII**。
+       cmd.exe 按 OEM 代码页读 .cmd，写中文进去必然是乱码，还会把命令拆坏。
+       所以那三个开关的中文只出现在**文件名**里（文件系统是 UTF-16，没问题）。
+    """
+
+    HERE = os.path.dirname(os.path.abspath(__file__))
+    MC_PROXY = os.path.join(os.path.dirname(HERE), "mc-proxy")
+
+    def _has_bom(self, path):
+        with open(path, "rb") as f:
+            return f.read(3) == b"\xef\xbb\xbf"
+
+    def test_ps1_has_utf8_bom(self):
+        p = os.path.join(self.MC_PROXY, "bsk-proxy.ps1")
+        self.assertTrue(os.path.isfile(p), p)
+        self.assertTrue(self._has_bom(p),
+                        "bsk-proxy.ps1 丢了 UTF-8 BOM —— Windows PowerShell 会按 "
+                        "ANSI 读，含中文的脚本会整份语法错乱。重新加回 EF BB BF。")
+
+    def test_ps1_actually_contains_non_ascii(self):
+        """没有中文的话 BOM 也就无所谓了 —— 这条防的是"把中文全删了"这种假修复。"""
+        p = os.path.join(self.MC_PROXY, "bsk-proxy.ps1")
+        with open(p, "rb") as f:
+            raw = f.read()
+        self.assertTrue(any(b > 0x7F for b in raw),
+                        "bsk-proxy.ps1 里没有非 ASCII 字节了？那 BOM 的测试就没意义了")
+
+    def test_cmd_files_are_ascii_only(self):
+        names = [n for n in os.listdir(self.MC_PROXY) if n.lower().endswith(".cmd")]
+        self.assertTrue(names, "一个 .cmd 都没找到？")
+        for n in names:
+            with open(os.path.join(self.MC_PROXY, n), "rb") as f:
+                raw = f.read()
+            bad = [b for b in raw if b > 0x7F]
+            self.assertEqual(bad, [], "%s 里有非 ASCII 字节（cmd.exe 按 OEM 代码页读，"
+                                      "中文会变乱码并可能拆坏命令）" % n)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

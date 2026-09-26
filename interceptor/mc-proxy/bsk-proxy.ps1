@@ -359,6 +359,22 @@ function Ensure-Certs {
 
 $JavaAlias = 'bsk-hypixel-local-ca'
 
+# ---- 独立信任库的位置 / 口令 -----------------------------------------------
+#
+# ⚠️ 位置必须**纯 ASCII**。mc-proxy 本身常常装在中文路径下
+#   （这台机器上就是 `E:\DESKTOP\新建文件夹\…`），而
+#   `-Djavax.net.ssl.trustStore=<中文路径>` 会因为代码页转换而坏掉 ——
+#   同一个坑已经让 keytool 挂过一次（见 Sync-JavaTrustStores 里的注释）。
+#   ProgramData 在 Windows 上恒为 ASCII, 所以默认放那儿。
+#
+# 想改位置就在 config.json 里加 `javaTrustStore`, 填**目录**。
+$JavaTrustDir  = Join-Path $env:ProgramData 'BSK-Hypixel'
+$JavaTrustJks  = Join-Path $JavaTrustDir 'cacerts-jks'
+$JavaTrustPass = 'changeit'
+$JavaTrustOpts = "-Djavax.net.ssl.trustStore=$JavaTrustJks" +
+                 " -Djavax.net.ssl.trustStorePassword=$JavaTrustPass" +
+                 " -Djavax.net.ssl.trustStoreType=JKS"
+
 function Invoke-Keytool($keytool, [string[]]$Arguments) {
     <#
       跑 keytool, 返回 @(退出码, 输出)。
@@ -557,16 +573,51 @@ function Save-JavaStoreState($map) {
     } catch { }
 }
 
+function Test-LunarManagedJre($path) {
+    <#
+      ★ 这个 cacerts 是不是 Lunar 管的?
+
+      Lunar Client 每次启动游戏都会把自带的 JRE **重新铺一遍**: `lib\security\`
+      整个目录（含 cacerts / blocked.certs / default.policy）时间戳被刷成启动那一秒,
+      我们导进去的 CA 直接消失。实测时间线:
+
+        13:07  导入 Lunar 的 zulu17 -> cacerts 123740 字节
+        13:08  同一个 JRE 跑探针 -> HTTP 200（那时还没开游戏）
+        18:19  Lunar 启动游戏 -> 目录被重铺, cacerts 缩回 122913 字节, 别名没了
+        18:20  游戏报 PKIX path building failed
+
+      所以对 Lunar 来说, "导入它的 JRE" 是**每次开游戏都要重做、而且做完就作废**的
+      无用功 —— 更糟的是它会打印"已导入"让人以为搞定了。改走独立信任库。
+    #>
+    return [bool]($path -like '*.lunarclient\jre\*')
+}
+
 function Sync-JavaTrustStores($ca, $remove = $false) {
     <#
       把我们的 CA 导入 / 移出所有 JRE 的 cacerts。返回 (成功数, 总数, 明细)。
       每个 cacerts 改动前会备份一份 .bsk-backup（只备一次, 不覆盖）。
     #>
-    $stores = Get-JavaTrustStores
-    if (-not $stores) {
+    $all = Get-JavaTrustStores
+    if (-not $all) {
         Info '没找到任何 Java 信任库（没装 Java？那就不需要这一步）'
         return @(0, 0, @())
     }
+
+    # ★ Lunar 的 JRE 单独挑出来: 导了也会被它下次启动抹掉。
+    #   独立信任库已经就绪时直接跳过（省时间 + 不再给假的"已导入"）；
+    #   没就绪时仍然照导 —— 聊胜于无, 至少这次开游戏能撑到下次重铺。
+    $lunar = @($all | Where-Object { Test-LunarManagedJre $_ })
+    $stores = @($all | Where-Object { -not (Test-LunarManagedJre $_) })
+    if ($lunar.Count -gt 0) {
+        if (Test-JavaTrustStoreReady) {
+            Info "跳过 $($lunar.Count) 个 Lunar 自带 JRE（每次开游戏都会被重铺, 导了也白导; 已改用独立信任库）"
+        } else {
+            Warn "Lunar 自带 JRE 有 $($lunar.Count) 个 —— 它每次开游戏都会重铺, 导进去的 CA 会被抹掉"
+            Info '仍然照导一次（聊胜于无）。想彻底解决请确保「拦截」跑完不报错, 它会建一个独立信任库'
+            $stores = @($stores) + @($lunar)
+        }
+    }
+    if (-not $stores) { return @(0, 0, @()) }
 
     # ★ 路径要自己从 $CertDir 推 —— $caCer 是 Ensure-Certs 里的**局部变量**,
     #   在这儿取不到（实测拿到空串, Copy-Item 报"参数是空值"）。
@@ -674,6 +725,156 @@ function Sync-JavaTrustStores($ca, $remove = $false) {
     Save-JavaStoreState $jsDone | Out-Null
     if ($skipped -gt 0) { $detail += "（其中 $skipped 个上次已处理过, 直接跳过）" }
     return @($done, $stores.Count, $detail)
+}
+
+# ---- 独立信任库（专治「每次启动都把 JRE 重铺一遍」的客户端）----------------
+#
+# ★ 为什么非要有它: Lunar Client 每次启动游戏都会把自带的 JRE **重新铺一遍** ——
+#   `lib\security\cacerts` 直接缩回原始大小, 我们导进去的 CA 被抹掉。
+#   实测时间线:
+#     13:07  把 CA 导进 Lunar 的 zulu17 -> cacerts 123740 字节
+#     13:08  同一个 JRE 跑探针 -> HTTP 200, PKIX 消失
+#     18:19  Lunar 启动游戏, `lib\security\` 整个目录时间戳被刷成这一秒,
+#            cacerts 缩回 122913 字节、别名消失
+#     18:20  游戏报 PKIX path building failed
+#   结论: **往 Lunar 的 JRE 里导证书永远是白干**, 每次开游戏都得重导一遍 ——
+#   而且失败是静默的（代理那边什么都看不到, 见 proxy.js 的 tlsClientError）。
+#
+#   解法: 另建一个**不会被重铺**的信任库, 再用用户级 JAVA_TOOL_OPTIONS 让所有
+#   JVM 都用它。不动 Lunar 的任何设置, 重启游戏就生效。
+#
+#   ⚠️ 路径必须**纯 ASCII**: 装在这台机器上时 mc-proxy 在 `E:\DESKTOP\新建文件夹\…`,
+#   而 `-Djavax.net.ssl.trustStore=<中文路径>` 会因为代码页转换坏掉
+#   （keytool 已经被这个坑过一次, 见 Sync-JavaTrustStores 里那段注释）。
+#   所以默认放在 `C:\ProgramData\BSK-Hypixel\`（Windows 上恒为 ASCII）,
+#   也可以在 config.json 里用 `javaTrustStore` 改。
+#
+#   ⚠️ 格式必须 **JKS**: Java 8 读不了新 JDK 生成的 PKCS12 默认库,
+#   实测报 NoSuchAlgorithmException。所以导入完还要 `-importkeystore` 转一次。
+
+function Get-BaseCacerts {
+    <#
+      找一个 cacerts 当"底料"（里面有公共根, 不能从空库开始, 否则除了
+      api.hypixel.net 之外的所有 HTTPS 都会挂）。
+      优先用 Lunar 在用的那个 —— 那正是游戏平时信任的那套根。
+    #>
+    $roots = @(
+        (Join-Path $env:USERPROFILE '.lunarclient\jre'),
+        (Join-Path $env:ProgramFiles 'Zulu'),
+        (Join-Path $env:ProgramFiles 'Java'),
+        (Join-Path $env:ProgramFiles 'Eclipse Adoptium')
+    ) | Where-Object { $_ -and (Test-Path $_) }
+
+    foreach ($r in $roots) {
+        $hit = Get-ChildItem $r -Recurse -Filter 'cacerts' -File -Depth 7 -ErrorAction SilentlyContinue |
+               Where-Object { $_.DirectoryName -like '*lib\security' } |
+               Sort-Object LastWriteTime -Descending |
+               Select-Object -First 1
+        if ($hit) { return $hit.FullName }
+    }
+    # 兜底: 用之前扫到的任意一个
+    $any = Get-JavaTrustStores | Select-Object -First 1
+    if ($any) { return $any }
+    return $null
+}
+
+function Test-JavaTrustStoreReady {
+    if (-not (Test-Path $JavaTrustJks)) { return $false }
+    if ([Environment]::GetEnvironmentVariable('JAVA_TOOL_OPTIONS', 'User') -ne $JavaTrustOpts) { return $false }
+    return $true
+}
+
+function Ensure-JavaTrustStore {
+    <#
+      保证独立信任库存在、里面有我们的 CA、且 JAVA_TOOL_OPTIONS 指向它。
+      返回 $true = 已就绪。幂等: 全都对就直接返回, 不碰 keytool。
+    #>
+    $caCer = Join-Path $CertDir 'BSK-CA.cer'
+    if (-not (Test-Path $caCer)) { Warn "找不到 CA 证书文件: $caCer"; return $false }
+
+    # 已经就绪? 只验文件 + 环境变量（快）。
+    # 别名到底在不在要起一个 JVM 才能验（慢）, 所以只在环境变量不对、
+    # 也就是真要重建的时候才验。
+    if (Test-JavaTrustStoreReady) {
+        Info "独立信任库已就绪: $JavaTrustJks"
+        return $true
+    }
+
+    $base = Get-BaseCacerts
+    if (-not $base) {
+        Warn '这台机器上找不到任何 cacerts 当底料 —— 跳过独立信任库'
+        Warn '（那种情况下 Lunar 这类客户端每次开游戏都会 PKIX, 只能手动指定 JVM 参数）'
+        return $false
+    }
+    $kt = Get-KeytoolFor $base
+    if (-not $kt) { Warn "找不到 keytool（底料: $base）—— 跳过独立信任库"; return $false }
+
+    New-Item -ItemType Directory -Force -Path (Split-Path $JavaTrustJks -Parent) | Out-Null
+
+    $p12 = Join-Path (Split-Path $JavaTrustJks -Parent) 'cacerts-p12'
+    Copy-Item $base $p12 -Force
+
+    # ★ 先删掉可能已存在的同名别名, 再导入。
+    #   底料是从机器上随便一个 cacerts 拷的, 而 Sync-JavaTrustStores 之前
+    #   已经往**所有** JRE 里导过我们的 CA —— 于是 keytool 直接报
+    #   "证书未导入, 别名 <bsk-hypixel-local-ca> 已经存在" 而失败（实测）。
+    #   顺带这也解决了 CA 轮换: 旧 CA 会被删掉, 换成现在这把。
+    if (Test-CaInJavaStore $kt $p12) {
+        Invoke-Keytool $kt @('-delete', '-alias', $JavaAlias,
+                             '-keystore', $p12, '-storepass', $JavaTrustPass) | Out-Null
+    }
+
+    $r1 = Invoke-Keytool $kt @('-importcert', '-noprompt', '-trustcacerts',
+                               '-alias', $JavaAlias, '-file', $caCer,
+                               '-keystore', $p12, '-storepass', $JavaTrustPass)
+    if ($r1[0] -ne 0) {
+        Warn "把 CA 导进底料失败: $($r1[1].Trim())"
+        return $false
+    }
+    # ★ 转成 JKS —— Java 8 读不了新 JDK 生成的 PKCS12 默认库（NoSuchAlgorithmException）
+    $r2 = Invoke-Keytool $kt @('-importkeystore', '-noprompt',
+                               '-srckeystore', $p12, '-srcstoretype', 'PKCS12',
+                               '-srcstorepass', $JavaTrustPass,
+                               '-destkeystore', $JavaTrustJks, '-deststoretype', 'JKS',
+                               '-deststorepass', $JavaTrustPass)
+    if ($r2[0] -ne 0) {
+        # 底料不一定是 PKCS12（老 JDK / 某些发行版还是 JKS）。
+        # 明确指定类型反而会失败, 这时让 keytool 自己认。
+        $r2 = Invoke-Keytool $kt @('-importkeystore', '-noprompt',
+                                   '-srckeystore', $p12, '-srcstorepass', $JavaTrustPass,
+                                   '-destkeystore', $JavaTrustJks, '-deststoretype', 'JKS',
+                                   '-deststorepass', $JavaTrustPass)
+    }
+    if ($r2[0] -ne 0) {
+        Warn "转成 JKS 失败: $($r2[1].Trim())"
+        return $false
+    }
+    Remove-Item $p12 -Force -ErrorAction SilentlyContinue
+
+    try {
+        [Environment]::SetEnvironmentVariable('JAVA_TOOL_OPTIONS', $JavaTrustOpts, 'User')
+    } catch {
+        Warn "写 JAVA_TOOL_OPTIONS 失败: $($_.Exception.Message)"
+        return $false
+    }
+    Ok "独立信任库已建好: $JavaTrustJks"
+    Info '已设 JAVA_TOOL_OPTIONS（用户级）—— 所有 JVM 都会用它, Lunar 重铺 JRE 也不受影响'
+    return $true
+}
+
+function Remove-JavaTrustStoreOverride {
+    $cur = [Environment]::GetEnvironmentVariable('JAVA_TOOL_OPTIONS', 'User')
+    if (-not $cur) { Info 'JAVA_TOOL_OPTIONS 没设过, 无需清理'; return }
+    # ★ 只删**我们自己设的那句** —— 别人设的别乱动
+    if ($cur -notlike "*javax.net.ssl.trustStore*BSK-Hypixel*" -and
+        $cur -notlike "*javax.net.ssl.trustStore*bsk-trust*") {
+        Info "JAVA_TOOL_OPTIONS 不是我们设的, 保持不动: $cur"
+        return
+    }
+    try {
+        [Environment]::SetEnvironmentVariable('JAVA_TOOL_OPTIONS', $null, 'User')
+        Ok '已清掉 JAVA_TOOL_OPTIONS（用户级）'
+    } catch { Warn "清 JAVA_TOOL_OPTIONS 失败: $($_.Exception.Message)" }
 }
 
 # ---- 配置 ------------------------------------------------------------------
@@ -996,6 +1197,11 @@ function Do-拦截 {
     if ($NoJava) {
         Info '（-NoJava：跳过。Java 程序会不信任我们的证书）'
     } else {
+        # ① 独立信任库 —— 先做这个, 因为它是 Lunar 这类客户端的唯一出路,
+        #    而且 Sync-JavaTrustStores 要靠它来决定是否跳过 Lunar 的 JRE。
+        Ensure-JavaTrustStore | Out-Null
+
+        # ② 各 JRE 的 cacerts（Lunar 的会被跳过, 见 Test-LunarManagedJre）
         $caCert = Get-ExistingCert $CaSubject
         $r = Sync-JavaTrustStores $caCert
         Info "JRE 信任库: $($r[0])/$($r[1]) 个已处理"
@@ -1073,6 +1279,10 @@ function Do-恢复 {
     }
 
     Step '4/5 移出 Java 信任库'
+    # 独立信任库（JAVA_TOOL_OPTIONS）无论如何都要清 —— 它是"拦截"加上的全局副作用,
+    # 「恢复」的含义就是恢复原样。不清的话, 用户卸载/停用之后所有 JVM 还在用
+    # 一个可能已经不存在的信任库文件。
+    Remove-JavaTrustStoreOverride
     if ($RemoveJava) {
         $r = Sync-JavaTrustStores $null -remove $true
         Ok "Java 信任库: 处理了 $($r[0])/$($r[1]) 个"
@@ -1153,6 +1363,16 @@ function Do-状态 {
         } catch { Write-Host "  配置     : 读不动 config.json" -ForegroundColor Yellow }
     } else {
         Write-Host "  配置     : 还没生成" -ForegroundColor Gray
+    }
+
+    # Java 独立信任库 —— "游戏里报了 PKIX" 的头号嫌疑
+    if (Test-JavaTrustStoreReady) {
+        Write-Host "  Java信任库: 就绪 ($JavaTrustJks)" -ForegroundColor Green
+    } elseif (Test-Path $JavaTrustJks) {
+        Write-Host "  Java信任库: 文件在, 但 JAVA_TOOL_OPTIONS 没指过去（跑一次「拦截」修）" -ForegroundColor Yellow
+    } else {
+        Write-Host "  Java信任库: 还没建 —— 游戏里若报 PKIX path building failed 就是它" -ForegroundColor Yellow
+        Write-Host "              （Lunar 每次启动都会重铺自带 JRE, 往那里导证书永远是白干）" -ForegroundColor DarkGray
     }
 
     # 最近日志

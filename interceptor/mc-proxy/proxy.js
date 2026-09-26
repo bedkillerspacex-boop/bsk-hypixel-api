@@ -160,7 +160,7 @@ const HOP_BY_HOP = new Set([
 ]);
 
 const KEY_HEADERS = new Set(['api-key', 'x-api-key', 'apikey']);
-const stats = { total: 0, injected: 0, failed: 0, startedAt: Date.now() };
+const stats = { total: 0, injected: 0, failed: 0, tlsFailed: 0, startedAt: Date.now() };
 
 function buildHeaders(srcHeaders) {
   const out = {};
@@ -314,6 +314,22 @@ function main() {
     if (socket.writable) {
       try { socket.end('HTTP/1.1 400 Bad Request\r\n\r\n'); } catch (e) {}
     }
+  });
+
+  // ★ TLS 层失败必须留痕。
+  //
+  //   客户端**不信任我们的证书**时会自己中止握手 —— 请求根本不会变成 HTTP，
+  //   所以业务日志里一行都不会有。于是"游戏里 PKIX path building failed"
+  //   在代理这边**完全看不到证据**，只能靠猜。实测为此查了很久：
+  //   Lunar Client 每次启动都会把自带的 JRE 重新铺一遍，
+  //   把刚导入的 CA 从 `lib/security/cacerts` 抹掉，游戏侧握手失败，
+  //   而代理日志干干净净 —— 看起来像"拦截器没生效"。
+  server.on('tlsClientError', (e, socket) => {
+    stats.tlsFailed++;
+    const sni = (socket && socket.servername) ? socket.servername : '(无 SNI)';
+    log('★ TLS 握手失败 [%s]: %s', sni, e.message);
+    log('  如果这是游戏发来的: 说明它那个 JRE 的信任库里**没有** BSK 本地 CA。' +
+        '跑「状态.cmd」会告诉你怎么补（Lunar 每次启动都会重铺 JRE, 导进去也会被抹掉）。');
   });
 
   server.on('error', (e) => {
