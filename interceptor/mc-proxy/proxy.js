@@ -179,17 +179,46 @@ function buildHeaders(srcHeaders) {
   return out;
 }
 
+/**
+ * 强制覆盖时, 把 URL 里的 `?key=` / `?apikey=` 也删掉。
+ *
+ * ★ 光删 header 不够（实测踩到）。很多模组把 Key 直接拼在 URL 里:
+ *     /v2/player?key=<它自己的key>&name=xxx
+ * 而反代**认 URL 参数优先于请求头**。于是:
+ *     · 模组带的是 Hypixel 官方 Key -> 反代直接 401
+ *       ("Invalid API key. This key was not issued by ...")
+ *     · 或者两边不一致时行为完全不可预测
+ * forceKey=true 的语义就是"我的 Key 说了算", 所以 URL 里的也必须清掉。
+ */
+function stripKeyFromQuery(rawUrl) {
+  if (!CFG.forceKey) return rawUrl;
+  try {
+    const u = new URL(rawUrl);
+    let changed = false;
+    for (const name of ['key', 'apikey']) {
+      if (u.searchParams.has(name)) {
+        u.searchParams.delete(name);
+        changed = true;
+      }
+    }
+    return changed ? u.toString() : rawUrl;
+  } catch (e) {
+    return rawUrl;
+  }
+}
+
 function forward(req, res) {
   stats.total++;
   const started = Date.now();
   const headers = buildHeaders(req.headers);
+  const reqPath = stripKeyFromQuery(req.url);
 
   const options = {
     protocol: target.protocol,
     hostname: target.hostname,
     port: target.port || 443,
     method: req.method,
-    path: req.url,                 // ★ 原样带上 path + query
+    path: reqPath,                 // ★ path + query（已剥掉 key=）
     headers,
   };
 
@@ -208,7 +237,7 @@ function forward(req, res) {
     up.pipe(res);
     up.on('end', () => {
       log('%s %s -> %d (%dms)%s',
-          req.method, req.url, up.statusCode, Date.now() - started,
+          req.method, reqPath, up.statusCode, Date.now() - started,
           headers['API-Key'] ? ' [已注入 Key ' + mask(headers['API-Key']) + ']' : ' [无 Key]');
     });
   });
