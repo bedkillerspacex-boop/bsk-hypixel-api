@@ -66,8 +66,13 @@ requests.get("https://api.hypixel.net/v2/player", params={"uuid": "..."})
 
 ```python
 with bsk.intercept(api_key="bsk_..."):
-    requests.get("https://api.hypixel.net/v2/games")
+    requests.get("https://api.hypixel.net/v2/resources/games")
 ```
+
+> 例子里用 `/v2/resources/games` 是因为它合法、不需要 uuid、返回也不大。
+> **别拿 `/v2/games` 试** —— 那个端点不存在，会返回
+> `{"success":false,"cause":"Unknown endpoint"}`，看着像工具坏了，
+> 其实只是路径写错（我自己就被这个误导过一次）。
 
 ---
 

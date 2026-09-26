@@ -188,8 +188,10 @@
     if (!BSKHypixel.isInstalled()) install();
 
     // ★ 故意写官方地址 —— 拦截器就是要在网络层把它改掉。
-    //   这里用 /v2/games（不需要 uuid，返回也小），方便快速验证。
-    var url = 'https://api.hypixel.net/v2/games';
+    //   端点用 /v2/resources/games：合法、不需要 uuid、返回也不大。
+    //   （别用 /v2/games —— 那个端点不存在, 会回 "Unknown endpoint",
+    //     看起来像拦截器坏了, 其实只是路径写错。）
+    var url = 'https://api.hypixel.net/v2/resources/games';
     say('发起请求: ' + url);
     $('out').textContent = '请求中…';
 

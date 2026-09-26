@@ -10,11 +10,16 @@
  * 验证: 响应能正常回来、path 原样、状态码原样、Key 被注入（看代理日志）。
  *
  *   node test_client.mjs <port> [path]
+ *
+ * ★ 默认端点用 /v2/resources/games —— 它是**合法**端点而且不需要 uuid。
+ *   别用 /v2/games: 那个端点根本不存在, Hypixel 会回
+ *   {"success":false,"cause":"Unknown endpoint"}, 看起来像代理坏了,
+ *   其实只是路径写错了（实测误导过一次）。
  */
 import https from 'node:https';
 
 const port = parseInt(process.argv[2] || '8443', 10);
-const path = process.argv[3] || '/v2/games';
+const path = process.argv[3] || '/v2/resources/games';
 
 const req = https.request({
   host: '127.0.0.1',
