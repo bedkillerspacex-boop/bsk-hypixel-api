@@ -28,7 +28,11 @@ Endpoint:  GET / POST  /api/denick          昵称 -> 真名/UUID
            GET         /api/search          昵称/真名模糊搜索(本地)
            GET         /api/recent          最近记录到的昵称(轮询)
            GET         /api/nick-history    某个昵称的完整出现历史
-           GET         /api/hypixel         Hypixel 官方接口反代(与下面那个同义)
+           GET         /api/hypixel/v2/...  Hypixel 官方接口反代的**别名**
+           (和直连反代**字节级一致**; 少写 `/v2` 也行, 会自动补上:
+            `/api/hypixel/player?name=X` == `/api/hypixel/v2/player?name=X`;
+            裸调 /api/hypixel 没有子路径可转发, 会回一段说明;
+            **推荐直接用 https://hyp-api.firebounce.today/v2/...**, 少一层)
 
 清单:      GET /api                     列出所有端点 + 版本 + 参数提示(机器可读)
 
@@ -401,6 +405,18 @@ Authorization: Bearer <Key>
 **为什么**：出网的接口要占 Hypixel Key 池的额度、还要等网络（几百毫秒到几秒），
 纯本地的查一次索引只要 10~300 毫秒。成本不同，收一样的额度不合理。
 
+> ⚠️ **`hyp-api.firebounce.today/v2/*`（那个反代）不在上面这张表里 —— 它的基础价是 1，不是 1.5。**
+>
+> 实测（2026-09-26 复查）：`/v2/player` 也是 **cost=1**。
+> 1.5 只适用于 `/api/player`、`/api/player/card`、`/api/tags` 这三个**本站加工的**接口。
+> 反代是从头到尾的透传、不做解析也不建卡，所以按 1 收。
+>
+> 反代的**体积加权照样生效**：`resources/skyblock/items` = 15、`bazaar` = 7，
+> 而 2.4 MB 的 `skyblock/auctions` 仍是 1（没到 3 MB 那档）。
+>
+> 另外：**4xx 也扣额度**（401 / 404 实测都是 cost=1）—— 出错不代表没占用资源。
+> 唯一不扣的是**根本没到源站**的那类（比如被 Cloudflare 挡下的 403，cost=0）。
+
 > 💡 **额度按总量算，不是按次数** —— 1.5 这种小数会真的累加。所以 225 的额度
 > 能放 **150 次** `/api/player`（150 × 1.5 = 225），而不是"必须凑整"。
 > 卡到边界上不会浪费：比如额度 10 时能放 6 次（用掉 9.0），第 7 次才超。
@@ -409,11 +425,11 @@ Authorization: Bearer <Key>
 
 在上面那个基础上，**响应特别大**再多扣（因为带宽 / 内存都是我们出）：
 
-| 响应大小 | 额外扣 | 合计（本地接口 / 出网接口） |
+| 响应大小 | 额外扣 | 合计（本地接口 / 出网接口 / 反代） |
 |---|---|---|
-| ≤ 3 MB | — | **1** / **1.5** |
-| > 3 MB | +6 | **7** / **7.5** |
-| > 5 MB | +14 | **15** / **15.5** |
+| ≤ 3 MB | — | **1** / **1.5** / **1** |
+| > 3 MB | +6 | **7** / **7.5** / **7** |
+| > 5 MB | +14 | **15** / **15.5** / **15** |
 
 > `MB` 按**十进制**算（1 MB = 1,000,000 字节）。边界是**严格大于**：
 > 正好 3 MB 不额外扣，正好 5 MB 也只算 3 MB 那档。
@@ -422,8 +438,8 @@ Authorization: Bearer <Key>
 只有 85 字节。两者在我们这边（带宽 / 内存 / 上游等待）成本差得很远，按次数一刀切
 不公平 —— 拿大响应的人会挤占别人的份额。加权之后自然就均衡了。
 
-> 两者是**叠加**的：先按"出不出网"定基础（1 或 1.5），再看体积加。
-> 所以出网接口拉一个 5 MB 的响应扣 **15.5**。
+> 两者是**叠加**的：先定基础价（本站本地 1 / 本站出网 1.5 / 反代 1），再看体积加。
+> 所以流媒体接口拉一个 5 MB 的响应扣 **15.5**，反代拉一个 5 MB 的扣 **15**。
 
 每次响应都有 **`X-Quota-Cost`** 头，一眼看到这次花了多少：
 
@@ -956,6 +972,27 @@ GET /api/nick-history?nick=<昵称>&limit=200
 路径、查询参数、返回的 JSON **全都是原样透传**的 —— 你的客户端仍然以为自己在跟
 Hypixel 说话，不用改任何解析代码。
 
+### 别名入口 `/api/hypixel/v2/...`
+
+如果出于某种原因不想用第二个域名，反代在**主域名上也有一个别名**：
+
+```
+https://hyp-api.firebounce.today/v2/player?name=Notch
+https://api.firebounce.today/api/hypixel/v2/player?name=Notch   ← 等价
+```
+
+两条路径返回的东西**字节级一致**（实测 7741 B / 85 B / 23981 B 三个样本
+`BODY_IDENTICAL=True`，`Content-Type` 也一致），Key、额度、缓存全部共用。
+
+少写 `/v2` 也行，会自动补上：
+
+```
+/api/hypixel/player?name=Notch   ==   /api/hypixel/v2/player?name=Notch
+```
+
+（裸调 `/api/hypixel` 没有子路径可转发，会回一段说明 JSON，**不消耗上游额度**。
+还是**推荐直接用 `hyp-api.firebounce.today`** —— 少一层转发、少一次跳转。）
+
 ### 和官方有什么区别
 
 | | 官方 `api.hypixel.net` | 这个反代 |
@@ -1014,12 +1051,13 @@ r = requests.get(
 print(r.json()["player"]["displayname"])
 ```
 
-### 覆盖范围：官方全部 30 个端点
+### 覆盖范围：官方全部 34 个端点
 
 **官方 v2 的每一个端点都转发** —— 我们不做白名单，所以官方文档里有什么这里就有
 什么。[官方文档](https://github.com/HypixelDev/PublicAPI)。
 
-下面是**实测过**的清单（2026-09-25 全量跑过一遍，都通）：
+下面是**实测过**的清单（2026-09-25 全量跑过一遍，都通；
+2026-09-26 复查时官方已增至 **34 个**，补上了 Housing 和 Garden 那 4 个）：
 
 | 端点 | 参数 | 实测大小 | 说明 |
 |---|---|---|---|
@@ -1045,7 +1083,7 @@ print(r.json()["player"]["displayname"])
 | `/v2/resources/skyblock/bingo` | — | 4.9 KB | Bingo 目标 |
 | `/v2/skyblock/news` | — | 1.2 KB | SkyBlock 新闻 |
 | `/v2/skyblock/bazaar` | — | **3.6 MB** | 集市价格 ⚠️ 扣 7 |
-| `/v2/skyblock/auctions` | `page` | **2.4 MB** | 活跃拍卖（分页）⚠️ 扣 7 |
+| `/v2/skyblock/auctions` | `page` | **2.4 MB** | 活跃拍卖（分页）⚠️ 扣 1（实测 2.4 MB 未达 3 MB 档） |
 | `/v2/skyblock/auctions_ended` | — | 147 KB | 刚结束的拍卖 |
 | `/v2/skyblock/firesales` | — | 27 B | 限时抢购 |
 | `/v2/skyblock/profiles` | `uuid` | 12 KB | 玩家所有 SkyBlock 档案 |
@@ -1053,12 +1091,33 @@ print(r.json()["player"]["displayname"])
 | `/v2/skyblock/museum` | `profile` | 29 B～ | 博物馆 |
 | `/v2/skyblock/bingo` | `uuid` | — | 玩家 Bingo 进度（没数据时 404） |
 | `/v2/skyblock/auction` | `uuid` | 2.3 KB | 单个拍卖详情 |
+| `/v2/skyblock/garden` | `profile` | — | 花园（2026-09 新增） |
+| `/v2/housing/active` | — | — | 活跃房屋列表 |
+| `/v2/housing/houses` | `uuid` | — | 某玩家的房屋 |
+| `/v2/housing/house` | `house` | — | 单个房屋详情 |
 
+> ⚠️ **Housing 那三个返回的是裸数组，没有 `success` 外壳** —— 这是 Hypixel
+> 那边的行为，我们原样透传。按 `{success, cause}` 解析的代码在它们上面会拿到
+> null，用之前先看一眼实际返回。
+>
 > ⚠️ 标了大小的是**大响应** —— 会按[体积加权](#按响应体积加权)多扣额度。
 > `skyblock/items`（5 MB）和 `bazaar`（3.6 MB）这类**请本地缓存**，
 > 它们是静态/准静态数据，反复拉纯属浪费。
 >
 > 💡 响应头里的 **`X-Quota-Cost`** 会告诉你这次花了多少额度，不用自己算。
+
+### 这个反代**只接受 GET**
+
+官方 v2 本来就是 GET-only，所以功能上没损失。但要知道：
+
+| 方法 | 返回 |
+| --- | --- |
+| `GET /v2/*` | Hypixel 的原样响应 |
+| 其它方法（`POST` 等） | **本站**的 `404 {"error":"not found","path":…}` |
+| `HEAD` | **本站**的 `501` |
+
+也就是说**非 GET 的报错形状不保证是官方的 `{success,cause}`**。
+只认官方形状的解析代码遇到 404/501 会拿到 null —— 别把非 GET 当正常路径用。
 
 ### 为什么不能拿真 Hypixel Key 来用
 
@@ -1068,15 +1127,25 @@ print(r.json()["player"]["displayname"])
 
 ### 一个已知情况：Cloudflare 会挡特定 User-Agent
 
-这个域名在 Cloudflare 后面并开启了 Browser Integrity Check，**`python-urllib`
-的默认 UA 会被挡，返回 `403 error code: 1010`**（请求根本没到我们这边）。
+这个域名在 Cloudflare 后面，Browser Integrity Check 会挡掉一些 UA：
 
-浏览器、`curl`、`requests`、各种 SDK 都自带 UA，**不受影响**。只有裸用 Python
-`urllib` 且不设 UA 的脚本会撞上 —— 那时随便设一个 `User-Agent` 头即可：
+- **`python-urllib/x.y`（urllib 默认）** → `403 error code: 1010`
+- **`Java/1.x`（Java 的 `HttpsURLConnection` 默认）** → 同样 `403 / 1010`
 
-```python
-req = urllib.request.Request(url, headers={"User-Agent": "my-app/1.0"})
-```
+请求**根本没到我们这边**，所以这种情况**不计额度**。
+
+> ⚠️ **这条不稳定**：实测同一天第一轮 403，半小时后连打 3 次全是 200。
+> 别去赌"这次没被挡"，**永远显式带一个 `User-Agent`** 才对：
+>
+> ```python
+> req = urllib.request.Request(url, headers={"User-Agent": "my-app/1.0"})
+> ```
+
+已针对 API 域名加了一条 WAF 规则跳过 Browser Integrity Check ——
+`hyp-api.firebounce.today` 和 `api.firebounce.today` 现在不受影响；
+`mail.firebounce.today` 这类浏览器站点**保护照旧**（Java UA 仍会被挡）。
+
+浏览器、`curl`、`requests`、各种 SDK 都自带 UA，本来就不受影响。
 
 ---
 
@@ -1097,6 +1166,8 @@ req = urllib.request.Request(url, headers={"User-Agent": "my-app/1.0"})
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-26 | **修 `/api/hypixel` 别名（原来五种形态全 404）**：文档和 `/api` 清单里一直列着这个别名，但它**从来没成功过一次**。两个原因叠在一起：① 反代处理函数**不管从哪进来的都读 `self.path`**，于是 `/api/hypixel/v2/status` 把整串（含 `/api/hypixel` 前缀）丢给上游 → 上游 404；② 带后缀的形态**先撞上版本路由**，被解析成「端点=hypixel，版本=v2/status」→ 本站 404 未知版本，根本走不到反代那段代码。现在在版本路由**之前**拦下 `/api/hypixel(/*)`，剥掉前缀交给反代。顺带修掉两个附带毛病：裸调 `/api/hypixel` 以前兜底成 `/v2` 让上游回一个看不懂的 404，现在直接回一段说明 JSON（不消耗上游额度）；少写 `/v2` 的形态（`/api/hypixel/player?name=X`）以前会 `path = "/v2"` **把子路径整个丢掉**变成 `/v2?name=X` → 上游 `Unknown endpoint`，现在是**补上** `/v2` 得到 `/v2/player?name=X`。线上实测五种形态全通，且与 `hyp-api` 直连**字节级一致**（7741 B / 85 B / 23981 B 三样本 `BODY_IDENTICAL=True`）。反代返回格式**一个字没动** |
+| 2026-09-26 | **端点清单 30 → 34**：官方 v2 新增了 `/v2/housing/{active,houses,house}` 和 `/v2/skyblock/garden`。同时把两条容易被坑的事实写进文档：`/v2/housing/*` 返回的是**裸数组**（没有 `success` 外壳，这是 Hypixel 的行为，我们原样透传）；反代**只接受 GET**，非 GET 拿到的是本站的 404/501，形状**不是**官方的 `{success,cause}` |
 | 2026-09-25 | **补全反代的端点清单**：《覆盖范围》从"四个常用例子"扩成**官方全部 30 个端点**的实测表（带参数、响应大小、备注）。起因：反代本来就转发所有 `/v2/*`，但文档只列了 4 个，用的人（和 AI）不知道别的能不能用 —— 于是把 30 个**全量跑了一遍**确认都通，并标出哪几个是大响应（`skyblock/items` 5 MB、`bazaar` 3.6 MB、`leaderboards` 389 KB…），提醒本地缓存 |
 | 2026-09-25 | **打了上游的接口改成扣 1.5**：`/api/player`、`/api/player/card`、`/api/tags` 每次要真的出网打 Hypixel / Urchin，一次扣 **1.5**；`/api/denick`、`/api/search`、`/api/recent`、`/api/nick-history` 纯本地查索引，仍是 1。为了支持小数，额度计数器从"记一条时间戳"改成**带权重**的形式（`(时间, 权重)`），判断超限按**总量**比 —— 所以 225 的额度能放 150 次 1.5，而不是凑整成 2 只能放 112 次。体积加权与它**叠加**：出网接口拉 5 MB 响应扣 15.5 |
 | 2026-09-25 | **反代出错的 `cause` 改成英文 + 点名是"反代的额度"**：以前额度用完回的是中文 `"请求过于频繁, 请稍后再试"` —— 那是**给群消息用的文案**，放在接口响应里不合适（调用方可能是任何语言的程序），而且没说是谁的额度。现在 `cause` 一律英文，并明确写出 `Quota exceeded on the hyp-api.firebounce.today reverse-proxy (this is the proxy's request quota, not your Hypixel API key)` 外加怎么办（等一会儿重试 / `/apikey rate` 提额 / 大响应有 `X-Quota-Cost`）。**不照抄官方那句 `"Key throttle"`** —— 那会让人误以为是自己的 Hypixel Key 被限流，跑去 Hypixel 后台查，方向全错 |

@@ -46,16 +46,24 @@ curl -H "API-Key: bsk_你的key" \
   "https://hyp-api.firebounce.today/v2/player?uuid=069a79f444e94726a5befca90e38aaf5"
 ```
 
-支持的端点: **官方 v2 的全部 30 个**（不做白名单）—— `/v2/player`、
+支持的端点: **官方 v2 的全部 34 个**（不做白名单）—— `/v2/player`、
 `/v2/status`、`/v2/recentgames`、`/v2/guild`、`/v2/counts`、
 `/v2/leaderboards`、`/v2/boosters`、`/v2/punishmentstats`、
 `/v2/resources/*`（achievements / challenges / games / quests /
 vanity / skyblock …）、`/v2/skyblock/*`（profiles / profile / bazaar /
-auctions / auctions_ended / auction / museum / news / firesales / bingo）。
+auctions / auctions_ended / auction / museum / news / firesales / bingo /
+garden）、`/v2/housing/*`（active / houses / house）。
 参数与字段一律见 README 的《覆盖范围》表或官方文档。
+
+注意: `/v2/housing/*` 返回的是**裸数组**（没有 `success` 外壳），
+这是 Hypixel 的行为，我们原样透传。
+另外这个反代**只接受 GET**（官方 v2 本来就是 GET-only）；非 GET 会拿到本站的
+404/501，形状不是官方的 `{success,cause}`。
 
 认证头三种都认: `API-Key` / `Authorization: Bearer` / `?key=`。
 `ratelimit-*` 响应头照原样透传。
+基础额度 **1**（不是 1.5 —— 1.5 是本站 `/api/player` 那三个加工接口的价），
+按响应体积加权，`X-Quota-Cost` 头会告诉你这次扣了多少。4xx 也扣。
 
 失败时最多换 2 次 Key 重试（共 3 次），仍失败则**原样返回** Hypixel 的错误响应。
 **出错时也是 Hypixel 的形状**（`{"success":false,"cause":"..."}`）—— 所以只认
