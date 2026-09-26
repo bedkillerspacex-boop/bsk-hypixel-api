@@ -160,8 +160,17 @@ function Ensure-Certs {
 
       为什么要装根证书: 浏览器/Java/系统要验证 api.hypixel.net 的证书链，
       而那张证书是我们自己签的。不装根证书 -> TLS 校验失败 -> 请求全挂。
+
+      ★ 本函数**只允许返回证书路径这一个字符串**。
+        PowerShell 里 .NET 方法的返回值会**泄漏进管道**成为函数输出 ——
+        实测 `$chain.ChainPolicy.ExtraStore.Add($ca)` 返回索引 0，
+        结果整个函数返回了 @(0, '路径')，写进 config.json 就成了
+        "pfX": [0, "..."] ，Node 找不到证书直接退出，代理起不来。
+        而且只在**第二次及以后**运行才触发（第一次不走那个分支），
+        所以第一次测试是好的 —— 特别难查。
+        下面所有可能产生输出的调用都显式吞掉了。
     #>
-    if (-not (Test-Path $CertDir)) { New-Item -ItemType Directory -Path $CertDir -Force | Out-Null }
+    if (-not (Test-Path $CertDir)) { $null = New-Item -ItemType Directory -Path $CertDir -Force }
 
     $leafPfx = Join-Path $CertDir 'api.hypixel.net.pfx'
     $caCer   = Join-Path $CertDir 'BSK-CA.cer'
@@ -191,7 +200,8 @@ function Ensure-Certs {
             $chain = New-Object System.Security.Cryptography.X509Certificates.X509Chain
             $chain.ChainPolicy.RevocationMode = 'NoCheck'
             $chain.ChainPolicy.VerificationFlags = 'AllowUnknownCertificateAuthority'
-            $chain.ChainPolicy.ExtraStore.Add($ca)
+            # ★ 这一行的返回值必须吞掉 —— 它就是那个泄漏出 0 的元凶
+            $null = $chain.ChainPolicy.ExtraStore.Add($ca)
             $null = $chain.Build($leaf)
             $issuerOk = ($chain.ChainElements.Count -gt 1)
             if ($issuerOk) {
@@ -227,14 +237,14 @@ function Ensure-Certs {
     Ok '证书已导出'
 
     # 信任 CA（首次会弹一个系统确认框，点「是」）
-    $trusted = Get-ChildItem 'Cert:\CurrentUser\Root' -ErrorAction SilentlyContinue |
-               Where-Object { $_.Thumbprint -eq $ca.Thumbprint }
-    if ($trusted) {
+    $trusted = @(Get-ChildItem 'Cert:\CurrentUser\Root' -ErrorAction SilentlyContinue |
+                 Where-Object { $_.Thumbprint -eq $ca.Thumbprint })
+    if ($trusted.Count -gt 0) {
         Ok 'CA 已在受信任根证书里'
     } else {
         Info '把 CA 装进「受信任的根证书颁发机构」（会弹一次确认框，点「是」）…'
         try {
-            Import-Certificate -FilePath $caCer -CertStoreLocation 'Cert:\CurrentUser\Root' | Out-Null
+            $null = Import-Certificate -FilePath $caCer -CertStoreLocation 'Cert:\CurrentUser\Root'
             Ok 'CA 已信任'
         } catch {
             Bad "装根证书失败: $($_.Exception.Message)"
@@ -243,7 +253,14 @@ function Ensure-Certs {
         }
     }
 
-    return $leafPfx
+    if (-not (Test-Path $leafPfx)) {
+        # 走到这儿说明导出没成功 —— 早点炸, 别等 Node 报"找不到证书"
+        Bad "证书导出失败，文件不存在: $leafPfx"
+        exit 1
+    }
+
+    # 显式 return 一个字符串, 别让任何意外输出混进去（见函数头的说明）
+    return [string]$leafPfx
 }
 
 # ---- 配置 ------------------------------------------------------------------
@@ -259,31 +276,66 @@ function Ensure-Config($leafPfx) {
         pfxPass    = $PfxPass
         serverName = $TARGET_HOST
         logFile    = $LogFile
+        # ★ pidFile 必须写进去 —— 代理靠它把 PID 报给上层（见 proxy.js 的
+        #   writePid）。漏了不会报错, 但「恢复」就得靠命令行扫描兜底,
+        #   属于静默失效。实测漏过一次。
+        pidFile    = $PidFile
     }
 
     if (Test-Path $CfgPath) {
         try {
             $old = Get-Content $CfgPath -Raw | ConvertFrom-Json
-            foreach ($k in @('proxyBase', 'apiKey', 'forceKey', 'listenPort')) {
+            foreach ($k in @('proxyBase', 'apiKey', 'forceKey', 'listenPort',
+                             'logFile', 'pidFile')) {
                 if ($null -ne $old.$k -and "$($old.$k)" -ne '') { $cfg[$k] = $old.$k }
             }
         } catch { Warn 'config.json 读不动，用默认值重建' }
     }
 
-    # 没填 Key 就问一次 —— 不填的话代理能起，但请求会 401，用户会一头雾水
-    if (-not $cfg.apiKey) {
-        Write-Host ''
-        Write-Host '  需要一个 bsk_ 开头的 Key 才能用反代。' -ForegroundColor Yellow
-        Write-Host '  没有的话：在 QQ 群里发  /apikey 你的QQ号  申请（群 519594836）' -ForegroundColor Yellow
-        Write-Host ''
-        $k = Read-Host '  请粘贴你的 API Key（直接回车 = 先不填）'
-        if ($k) { $cfg.apiKey = $k.Trim() } else { Warn '没填 Key —— 拦截会生效，但请求会 401' }
+    # 没填 Key 就问 —— 不填的话代理能起，但请求会 401，用户会一头雾水
+    #
+    # ★ 必须校验格式。实测用户把终端里的整行（`PS E:\...> git clone ...`）
+    #   粘进了输入框 —— 那种"Key"当然用不了，但脚本如果不拦就会存进配置，
+    #   用户之后只会看到一堆 401，完全想不到是自己粘错了。
+    $needAsk = -not $cfg.apiKey
+    if ($cfg.apiKey -and -not (Test-ApiKey $cfg.apiKey)) {
+        Warn "config.json 里那个 Key 不像是对的（必须是 bsk_ 开头的一串字符）"
+        $needAsk = $true
     }
 
-    $cfg.pfX = $leafPfx
+    while ($needAsk) {
+        Write-Host ''
+        Write-Host '  ------------------------------------------------------------' -ForegroundColor Yellow
+        Write-Host '  需要一个 bsk_ 开头的 API Key 才能用反代。' -ForegroundColor Yellow
+        Write-Host '  没有的话：QQ 群 519594836 里发  /apikey 你的QQ号  申请。' -ForegroundColor Yellow
+        Write-Host '  只粘贴 Key 本身（形如 bsk_1a2b3c…），别把整行命令粘进来。' -ForegroundColor Yellow
+        Write-Host '  ------------------------------------------------------------' -ForegroundColor Yellow
+        Write-Host ''
+        $k = (Read-Host '  请粘贴你的 API Key（直接回车 = 先跳过）').Trim()
+        if (-not $k) {
+            Warn '没填 Key —— 拦截会生效，但请求会返回 401'
+            $cfg.apiKey = ''
+            break
+        }
+        if (Test-ApiKey $k) {
+            $cfg.apiKey = $k
+            Ok ('Key 已记录: ' + $k.Substring(0, [Math]::Min(10, $k.Length)) + '…')
+            break
+        }
+        Bad '这看起来不是 Key。应该只有 bsk_ 加一串字母数字，没有空格、没有其它符号。'
+        Bad ('你输入的是: ' + $k.Substring(0, [Math]::Min(60, $k.Length)))
+        # 循环再问一次 —— 不把明显错误的东西写进配置
+    }
+
+    $cfg.pfX = [string]$leafPfx
     Write-TextNoBom $CfgPath ($cfg | ConvertTo-Json -Depth 5)
     Ok "配置已写入: $CfgPath"
     return $cfg
+}
+
+function Test-ApiKey($k) {
+    <# bsk_ 后面跟一串字母数字。宽松一点没关系，主要是挡住"粘错整行"这种。 #>
+    return [bool]($k -match '^bsk_[0-9A-Za-z]{8,}$')
 }
 
 # ---- 代理进程 --------------------------------------------------------------
@@ -388,9 +440,45 @@ function Start-Proxy {
         }
         if ($proc.HasExited) { break }
     }
-    Bad '代理没能在 12 秒内监听上 443'
-    Info "看日志: $LogFile"
-    Info '常见原因: 端口被占 / 证书没生成好 / Node 版本太老'
+
+    # ---- 失败: 把**真正的原因**摆出来 ----
+    #
+    # ★ 以前这里只说"没监听上" + "常见原因: 端口被占/证书没生成好/Node 太老"，
+    #   用户还得自己去翻日志才知道到底怎么回事（实测就是这么被卡住的）。
+    #   现在直接把日志尾巴抄出来, 外加几个能自动判定的检查项。
+    Bad '代理启动失败'
+    Write-Host ''
+
+    Write-Host '  自动检查:' -ForegroundColor Yellow
+
+    # 证书文件在不在
+    $c = $null
+    if (Test-Path $CfgPath) {
+        try { $c = Get-Content $CfgPath -Raw | ConvertFrom-Json } catch { }
+    }
+    if ($c) {
+        $pfxIsString = ($c.pfX -is [string])
+        Write-Host ("    config.pfX 类型 : " + $(if ($pfxIsString) { '字符串 (正常)' } else { '★ ' + $c.pfX.GetType().Name + ' —— 配置写坏了, 删掉 config.json 重新来' }))
+        if ($pfxIsString) {
+            Write-Host ("    证书文件存在    : " + $(if (Test-Path $c.pfX) { '是' } else { '★ 否' }))
+        }
+        Write-Host ("    Key 格式        : " + $(if (Test-ApiKey $c.apiKey) { '正常' } else { '★ 不对 (应形如 bsk_xxxx)' }))
+    }
+    Write-Host ("    node 版本       : " + (& $node.Source --version 2>&1))
+    $busy = Get-NetTCPConnection -LocalPort 443 -State Listen -ErrorAction SilentlyContinue
+    Write-Host ("    443 端口        : " + $(if ($busy) { '被占 (PID ' + $busy[0].OwningProcess + ')' } else { '空闲' }))
+
+    if (Test-Path $LogFile) {
+        Write-Host ''
+        Write-Host '  日志最后几行（通常直接写着原因）:' -ForegroundColor Yellow
+        Get-Content $LogFile -Encoding UTF8 -Tail 8 -ErrorAction SilentlyContinue |
+            ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
+    } else {
+        Write-Host ''
+        Warn "代理没写出日志（$LogFile）—— 说明它连启动都没走到"
+    }
+    Write-Host ''
+    Info '改完再跑一次「拦截」即可；配置坏了就删掉 config.json 让它重建。'
 }
 
 # ---- 三个动作 --------------------------------------------------------------
@@ -547,7 +635,10 @@ function Do-状态 {
     if (Test-Path $LogFile) {
         Write-Host ''
         Write-Host '  最近日志:'
-        Get-Content $LogFile -Tail 6 -ErrorAction SilentlyContinue |
+        # ★ 必须显式 -Encoding UTF8: 日志是 Node 按 UTF-8 写的, 而
+        #   Windows PowerShell 的 Get-Content 默认按 ANSI(GBK) 读 ——
+        #   不加这个参数中文全是乱码, 日志等于白看。
+        Get-Content $LogFile -Encoding UTF8 -Tail 6 -ErrorAction SilentlyContinue |
             ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
     }
     Write-Host ''
