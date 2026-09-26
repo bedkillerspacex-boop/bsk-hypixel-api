@@ -284,7 +284,12 @@ function Ensure-Config($leafPfx) {
 
     if (Test-Path $CfgPath) {
         try {
-            $old = Get-Content $CfgPath -Raw | ConvertFrom-Json
+            # ★ 必须 -Encoding UTF8。配置是我们自己按 UTF-8 写的, 而
+            #   Windows PowerShell 的 Get-Content 默认按 ANSI(GBK) 读 ——
+            #   路径里的中文会先变乱码、再被原样写回去, 于是 logFile/pidFile
+            #   指向一个不存在的目录: 日志永远不更新、PID 文件也生不出来。
+            #   **这个坑实测炸过**（用户目录叫「新建文件夹」）。
+            $old = Get-Content $CfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
             foreach ($k in @('proxyBase', 'apiKey', 'forceKey', 'listenPort',
                              'logFile', 'pidFile')) {
                 if ($null -ne $old.$k -and "$($old.$k)" -ne '') { $cfg[$k] = $old.$k }
@@ -454,7 +459,7 @@ function Start-Proxy {
     # 证书文件在不在
     $c = $null
     if (Test-Path $CfgPath) {
-        try { $c = Get-Content $CfgPath -Raw | ConvertFrom-Json } catch { }
+        try { $c = Get-Content $CfgPath -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
     }
     if ($c) {
         $pfxIsString = ($c.pfX -is [string])
@@ -508,7 +513,9 @@ function Do-拦截 {
     $bak = Backup-Hosts
     $lines = @(Get-Content -LiteralPath $HOSTS -ErrorAction SilentlyContinue)
     $lines += ''
-    $lines += "$MARK 由 bsk-proxy.ps1 添加 —— 跑「恢复」即可移除"
+    # ★ 注释行**故意用纯 ASCII**: hosts 文件会被各种工具按不同代码页读写,
+    #   写中文进去迟早被搞成乱码。匹配也是靠 $MARK 这段 ASCII 前缀, 稳。
+    $lines += "$MARK added by bsk-proxy.ps1 - run the restore script to remove"
     $lines += "127.0.0.1`t$TARGET_HOST"
     Write-TextNoBom $HOSTS ($lines -join "`r`n")
     Ok "$TARGET_HOST -> 127.0.0.1"
@@ -622,7 +629,7 @@ function Do-状态 {
     # 配置
     if (Test-Path $CfgPath) {
         try {
-            $c = Get-Content $CfgPath -Raw | ConvertFrom-Json
+            $c = Get-Content $CfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
             $k = if ($c.apiKey) { $c.apiKey.Substring(0, [Math]::Min(10, $c.apiKey.Length)) + '…' } else { '(没填)' }
             Write-Host "  转发到   : $($c.proxyBase)"
             Write-Host "  Key      : $k"
