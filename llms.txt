@@ -22,6 +22,40 @@
 - 认证: `bsk_` 开头的 Key，`/apikey` 申请
 - 示例代码: [examples/](./examples/)
 
+**查自己的额度（写客户端时先看这个）**：
+
+```http
+GET https://api.firebounce.today/api/quota?key=bsk_你的key
+```
+
+返回**你这把 Key 此刻**的额度 / 剩余 / 并发水位 / 两道全站闸门水位：
+
+```json
+{"ok": true, "cost": 0, "data": {
+  "per_min": 225, "per_min_src": "default", "used": 6.0, "remaining": 219.0,
+  "window_seconds": 60, "reset_at": 1790603500, "unlimited": false,
+  "charged": 6.0, "reserved": 0.0, "weighted": true,
+  "concurrency": {"limit": 20, "in_flight": 1, "src": "global"},
+  "prices": {"base_local": 1, "base_proxy": 1, "base_upstream": 1.5,
+             "size_gt_3mb": 7, "size_gt_5mb": 15},
+  "global_gate": {"per_min": 90, "used": 12},
+  "proxy_gate": {"per_min": 600, "used": 41},
+  "self": {"per_min": 10, "used": 1, "remaining": 9}
+}}
+```
+
+要点（细节见 [README 的《查自己的额度》](./README.md#查自己的额度-apiquota)）：
+
+- **免费**（`cost: 0`），**不进任何全站闸门** —— 全站正忙也照样能查；
+- **但它自己限速 10 次/分钟**，超了回 `429` + `Retry-After` 头；
+- 不限额度时 `per_min: 0`、`remaining: null`（配 `unlimited: true`），不是错误；
+- `used = charged + reserved`（**含在飞预留**，和服务端的判定口径一致）；
+- 只回调用方自己的信息；坏 Key / 停用的 Key 一律 `401`，不回任何数据；`key` 打码；
+- `Cache-Control: no-store`；三种鉴权（`API-Key` / `Bearer` / `?key=`）和网站短期令牌都认；
+- 版本化写法：`/api/quota` / `/api/quota/v1` / `/api/quota/v1-260925`。
+
+另外 `X-Quota-Cost`（每次请求花了多少）现在也在 CORS 暴露头里，浏览器能直接读。
+
 ### 2. Hypixel 官方 API 反代（**镜像 Hypixel 官方接口**）
 
 - Base: `https://hyp-api.firebounce.today`

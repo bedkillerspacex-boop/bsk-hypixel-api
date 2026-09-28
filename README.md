@@ -25,9 +25,11 @@ Endpoint:  GET / POST  /api/denick          昵称 -> 真名/UUID
            GET / POST  /api/player/card     整张卡片的内容(JSON, 网页靠它渲染)
            (已下线)    /api/card.png        410 —— 改用 /api/player/card
            GET         /api/tags            只要反作弊标签(最轻量)
+           GET         /api/checkban        查 Hypixel 封禁(本地索引, 带来源)
            GET         /api/search          昵称/真名模糊搜索(本地)
            GET         /api/recent          最近记录到的昵称(轮询)
            GET         /api/nick-history    某个昵称的完整出现历史
+           GET         /api/quota           查**你自己**的额度/并发/限流状态(免费)
            GET         /api/hypixel/v2/...  Hypixel 官方接口反代的**别名**
            (和直连反代**字节级一致**; 少写 `/v2` 也行, 会自动补上:
             `/api/hypixel/player?name=X` == `/api/hypixel/v2/player?name=X`;
@@ -57,6 +59,7 @@ Endpoint:  GET / POST  /api/denick          昵称 -> 真名/UUID
 - [玩家资料聚合 `/api/player`](#玩家资料聚合-apiplayer)
 - [卡片内容 `/api/player/card`](#卡片内容-apiplayercard)
 - [其它接口](#其它接口)
+- [查自己的额度 `/api/quota`](#查自己的额度-apiquota)
 - [Hypixel 官方接口反代](#hypixel-官方接口反代)
 - [注意事项](#注意事项重要)
 
@@ -386,6 +389,9 @@ Authorization: Bearer <Key>
 > 想知道**此刻**真正生效的数字，发 `/apikey rate`（列出全局默认 + 所有覆盖），
 > 或 `/apikey status <QQ号>` 看某个人实际拿到多少。
 > （代码里的出厂默认是 120，线上被调到了 225。）
+>
+> 💡 **写程序的话不用去群里问** —— 直接调 [`GET /api/quota`](#查自己的额度-apiquota)，
+> 它回的就是**你这把 Key 此刻生效的额度、已用、剩余、并发水位**，而且**免费**。
 
 ### 打了上游的接口扣 1.5
 
@@ -939,7 +945,124 @@ GET /api/nick-history?nick=<昵称>&limit=200
 
 `/api/player`、`/api/player/card`、`/api/tags` 这几个**会真的访问外部服务**，
 除了每 Key 的额度（**现值 225 / 分钟，且按响应体积加权**，见[额度](#额度)），还有一道**全局闸门**：**合计每分钟最多 90 次**（`429` 表示超了）。
-本地接口（`/api/denick`、`/api/search`、`/api/recent`、`/api/nick-history`）不受这道闸门限制。
+本地接口（`/api/denick`、`/api/search`、`/api/recent`、`/api/nick-history`、
+`/api/quota`）不受这道闸门限制。
+
+---
+
+## 查自己的额度 `/api/quota`
+
+```http
+GET /api/quota?key=<你的 Key>
+```
+
+**查你自己这把 Key 的额度、剩余、并发水位和限流状态。免费，1 秒内返回。**
+
+### 为什么需要它
+
+在这之前，公网**拿不到**任何额度信息 —— 只有响应头 `X-Quota-Cost` 告诉你
+"这一单花了多少"。限额是多少、还剩多少、并发水位多少，全部只能在**群里**
+（`/apikey rate`、`/apikey status`）或者**服务端本机**（`/health`）看：
+
+| 想知道的 | 以前只能从哪看 | 外部程序能用吗 |
+|---|---|---|
+| 每 Key 每分钟额度（现值 225 加权） | QQ 群 `/apikey status` | ❌ |
+| 并发上限 + 水位（默认 20） | `/health`（本机 `127.0.0.1:18096`） | ❌ |
+| 反代全站每分钟（默认 600） | QQ 群 `/apikey rate` | ❌ |
+| 这一单花了多少 | `X-Quota-Cost` 响应头 | ✅ |
+
+后果是插件只能**自己把 `X-Quota-Cost` 加起来**：刚重启游戏时显示
+`quota: last 0.0 / total 0.0`，用户第一反应是"插件坏了"；而且**没法预判 429**，
+只能撞上了再退避 —— 可 429 的三种原因（并发 / 全站 / 自己额度）处理方式
+完全不同（等 1~2 秒 / 等 10 秒 / 等 60 秒），以前根本分不清。
+
+### 返回
+
+```json
+{"ok": true, "cost": 0, "data": {
+  "key": "bsk_efbb…b398",
+  "window_seconds": 60,
+  "per_min": 225,
+  "per_min_src": "default",
+  "used": 6.0,
+  "remaining": 219.0,
+  "weighted": true,
+  "reset_at": 1790603500,
+  "unlimited": false,
+  "charged": 6.0,
+  "reserved": 0.0,
+  "concurrency": {"limit": 20, "in_flight": 1, "src": "global"},
+  "prices": {"base_local": 1, "base_proxy": 1, "base_upstream": 1.5,
+             "size_gt_3mb": 7, "size_gt_5mb": 15},
+  "global_gate": {"per_min": 90, "used": 12},
+  "proxy_gate": {"per_min": 600, "used": 41},
+  "self": {"per_min": 10, "used": 1, "remaining": 9}
+}}
+```
+
+| 字段 | 说明 |
+|---|---|
+| `per_min` | 你这把 Key **实际生效**的每分钟额度。`0` = 不限 |
+| `per_min_src` | 这个值来自哪一档：`key` / `qq` / `default` / `env` / `web_token` —— 报"额度不对"时一秒定位 |
+| `used` | 当前 60 秒窗口**已用**（加权后的总量，小数）。`= charged + reserved` |
+| `remaining` | `per_min - used`；**不限额度时是 `null`**（配 `unlimited: true`） |
+| `charged` / `reserved` | 拆开给：`charged` 是已经花掉的，`reserved` 是**还在飞、马上要花掉的** |
+| `reset_at` | unix 秒。窗口里没记录时 = 当前时刻（即"立刻可用"） |
+| `weighted` | 恒为 `true` —— 额度按**总量**算，1.5 这种小数会真的累加 |
+| `concurrency` | **你自己**的并发档位：上限、此刻在飞数、这个上限来自哪一档 |
+| `prices` | 价格表，省得客户端硬编码（和[额度](#额度)那两张表一致） |
+| `global_gate` / `proxy_gate` | 两道全站闸门的水位。**只给 `per_min` + `used`** |
+| `self` | 查额度这个动作**自己**的水位，见下 |
+
+> ⚠️ **`used` 必须把"在飞预留"算进来。**
+> 服务端判定超限时用的是 `已结算 + 在飞预留`，所以快照也只报已结算是错的 ——
+> 会出现"显示还剩 50，可下一个请求立刻 429"。两者都算，另外单独给 `reserved`
+> 让调用方分得清。
+
+### 特性
+
+- **免费**：`cost: 0`。查额度还要花额度的话就没人敢查了，而且它纯查内存、
+  不碰任何外部服务。**不会**把 `used` 推高（否则查一次涨一点，永远看不到真实剩余）。
+- **不进任何全站闸门**（并发 / 反代 / player 那三道），所以**随时可查** ——
+  哪怕全站正忙、别人正在 429，它照样 200。
+- **但它自己有限速**：**每分钟 10 次**，超了回 `429` + `Retry-After`。
+  理由：免费又秒回、不设限就是个可以随便刷的洞。
+  正常用法（启动查一次 + 撞 429 时查一次）碰不到这个限制；
+  被挡时 `self` 字段和 `message` 都会告诉你还剩几秒。
+- **`Cache-Control: no-store`**：实时数字，不能被缓存。
+- **只回你自己**：坏 Key / 被停用的 Key 一律 `401`，**绝不会** 200 顺手回别人的数据。
+  返回里的 `key` 是**打码**的（`bsk_efbb…b398`），不回明文。
+- 和别的接口一样支持三种鉴权（`API-Key` / `Authorization: Bearer` / `?key=`），
+  也认**网站短期令牌**。
+- 支持版本化写法：`/api/quota`、`/api/quota/v1`、`/api/quota/v1-260925`。
+
+### 错误
+
+| 情况 | 状态码 | `error` |
+|---|---|---|
+| 没带 Key | `401` | `missing_key` |
+| 坏 Key / 被停用 | `401` | `invalid_key` / `key_disabled` |
+| **查得太频繁**（> 10/分钟） | `429` | `rate_limited`，带 `retry_after` 和 `Retry-After` 头 |
+| 不限额度的 Key（`per_min: 0`） | `200` | —— `remaining` 是 `null`，**不报错** |
+
+### 客户端可以拿它做什么
+
+```python
+# 启动时查一次, 报告真实剩余（而不是本地估算的 ~219）
+q = requests.get("https://api.firebounce.today/api/quota",
+                 headers={"API-Key": KEY}).json()["data"]
+print("剩余 %s / %s" % (q["remaining"], q["per_min"]))
+
+# 撞了 429 之后, 分清是哪一种, 用不同的退避
+#   concurrency limit -> 等 1~2 秒
+#   Quota exceeded    -> 等 60 秒
+#   Server is busy    -> 等 10 秒
+# （本站 /api/* 的 429 现在也带 Retry-After 头, 连算都不用算）
+
+# 主动限流: 剩余不足 10% 时把自动查询降到保守间隔, 不再撞 429
+if q["remaining"] is not None and q["remaining"] / q["per_min"] < 0.1:
+    slow_down()
+```
 
 ---
 
@@ -1255,6 +1378,7 @@ print(r.json()["player"]["displayname"])
 
 | 日期 | 变更 |
 |---|---|
+| 2026-09-27 | **新增 `GET /api/quota` —— 查你自己这把 Key 的额度 / 并发 / 限流状态，免费。** 以前公网**拿不到**任何额度信息（只有 `X-Quota-Cost` 告诉你这一单花了多少），限额、剩余、并发水位全在群里或本机 `/health` 里，于是插件只能自己累加 `X-Quota-Cost`（刚重启显示 `0.0 / 0.0`，用户以为插件坏了），而且**没法预判 429**、分不清三种原因（并发 / 全站 / 自己额度 —— 退避分别是 1~2 秒 / 10 秒 / 60 秒）。响应用 `used = charged + reserved`：**在飞预留必须算进 used**，因为服务端判定超限用的就是"已结算 + 预留"，只报已结算会出现"显示还剩 50 但下一个请求立刻 429"。`cost: 0` 且**不进任何全站闸门**（随时可查，全站正忙也 200），但**它自己限速 10 次/分钟**（免费又秒回、不设限就是个随便刷的洞），超了回 429 + `Retry-After`。只回调用方自己的信息，坏 Key 一律 401 **绝不**顺手回别人的数据，`key` 字段打码。另外顺带：`X-Quota-Cost` 补进 CORS `Access-Control-Expose-Headers`（以前浏览器读不到它，网页没法自己统计花费），本站 `/api/*` 的 429 也补上了 `Retry-After` 头 |
 | 2026-09-26 | **并发上限支持「每人一档」**。全站那一档是**共享**的 —— 一个调用方开 50 个并发就能把 20 个槽位全占了，别人全 429；全站档只能保护「进程别被打垮」，保护不了「谁也别把谁挤死」。所以 `/apikey rate concurrency <Key或掩码|QQ号> <数字>` 能给单个人/单把 Key 另设一档，`off` 删掉。优先级 **按 Key > 按 QQ > 全站 > 环境变量 > 默认 20**。靠**参数个数**消歧（1 个 = 全站的值，2 个 = 先是谁再是值），不然 QQ 号和并发数都是数字没法分。按 Key 分桶只读请求里的 Key 做标识**不做鉴权** —— 拿不存在的 Key 来刷只会进它自己的桶然后照样 401；POST 的 Key 在 body 里时只算全站档。`/apikey rate` 会列出「谁在占着」（Key 打码）。实测：给两个 QQ 分别设 2 和 9，限 2 的连开 3 个得 `[True, True, False]`，同时另一个照常通过；释放后能再进；全站档独立生效。每把 Key 的计数在释放到 0 且没被拒过时整条删除，表不会涨 |
 | 2026-09-26 | **并发上限做成 `/apikey rate concurrency <N>`（热改，不用重启）**。`/apikey rate` 现在把并发上限和它的水位一起列出来；`concurrency <N>` 改、`concurrency 0` 不限、`concurrency off` 删掉设定回到环境变量。**没有单开指令** —— "每 Key 每分钟额度"和"同时在处理几个请求"同属"服务侧怎么限流"，挂在同一条下面就够了（第一版单开了一条 `/并发`，已撤掉重做）。优先级 **群里设的 > 环境变量 `QQBOT_MAX_CONCURRENCY` > 默认 20**，群里设的落盘到 `rate_limits.json` 所以重启后还在。做这个是因为"并发上限"是最需要**边看水位边调**的东西，而打满的那一刻正是不能重启的时刻 —— 只能改环境变量+重启的话等于没用。`/health` 的 `concurrency` 也补了 `src` / `env_default`，一眼看出当前值是哪来的 |
 | 2026-09-26 | **限流改成「并发上限 + 每分钟」两层，并把 nginx 那层从 `hyp-api` 删掉**。`hyp-api` 上的 nginx `limit_req`（20 req/s 每 IP）已移除，统一交给服务进程的**并发闸门** `QQBOT_MAX_CONCURRENCY`（默认 **20**，可调；`0` = 不限）。换成并发而不是速率的原因是：服务是 `ThreadingHTTPServer`，**每个请求开一个线程**，并发数本来没有上限 —— 一瞬间几千个请求就真去开几千个线程把内存吃光，而"每秒 N 次"的速率限制**看不见**这一点（它只管新请求来得多快，不管同时有多少还在跑）。满员时直接回 `429`（不排队 —— 排队会让延迟雪崩，而且排队的请求本身还占着连接和线程）。反代路径回 Hypixel 形状、本站 API 回 `{ok:false}`，两条路径分开不串味。水位可以从 `/health` 的 `concurrency: {limit, in_flight, peak, rejected}` 看。实测并发 60 打 200 发：`peak` 正好卡在 20 从没超，166 个 429 的 `cause` 都写明 `concurrency limit of 20` 且**明确不是你的 Key**。`hyp.firebounce.today` 和 GitHub webhook 的 nginx 限流**保留不动**（用户指定只删 api 端点那个）—— 它们上次补的 `limit_req_status 429` + JSON error_page 也保留，那是"别回 503 HTML"的修复 |
