@@ -20,7 +20,7 @@
 | ---: | --- | --- | --- |
 | [9](../../parameter-registry.md) | `name` | query/body | 否 |
 | [10](../../parameter-registry.md) | `uuid` | query/body | 否 |
-| [11](../../parameter-registry.md) | `nick` | **query** | 否 |
+| [11](../../parameter-registry.md) | `nick` | query/body | 否 |
 | [12](../../parameter-registry.md) | `q` | **query** | 否 |
 
 至少要给一个，都没有 → `400 missing_param`。
@@ -28,7 +28,9 @@
 
 ## 缓存行为
 
-- 缓存键是 `"<legacy:|modern:|>" + 小写化 UUID` —— **两个版本的缓存分开**，
+缓存键使用版本前缀加小写解析目标，本地能解析时为 UUID，否则可能仍是名字，不能保证所有条目都以 UUID 命名。HTTP API 不支持语言参数，也没有独立 locale 缓存维度；新版发送时转换为英文，QQ 的 `/hyp lang zh|en` 不改变此 API。
+
+- 缓存键是 `"<legacy:|modern:|>" + 小写化解析目标` —— **两个版本的缓存分开**，
   不会互相污染。
 - 新鲜期 **90 秒**；过期后在 **1800 秒**内仍可直接返回并**后台刷新**。
 - 最多 **64** 条。
@@ -36,6 +38,7 @@
   不健康的条目会被丢弃重新查；**失败的响应永不入缓存**。
 - 响应里带 `cached`（bool）、`cache_age`（秒），**仅当处于 stale 时**才有 `stale: true`。
 - **命中缓存仍然照常扣 1.5**（对直连 API 的调用而言）。缓存省的是上游时间，不是额度。
+- stale 后台刷新另向触发者的 Key 扣 1 基础额度；额度不足会释放刷新标记。这不等于缓存命中免费。
 
 ## 响应 `data`
 
@@ -98,6 +101,8 @@
 > 判断封禁请优先用 [`/api/bancheck`](../README.md#10-apibancheck) 的机器字段。
 
 ## 尺寸与限制
+
+当前 `cells[].id` 对中文 label 可能为空，不应当作已完整注册的唯一字段标识符；请求参数数字 ID 不受影响。
 
 - `left[]` / `right[]` 的**块数量不固定** —— 数据缺失的块会被省略。
 - 文案字段（`title` / `label` / `note` / `footer` / `caption`）是**服务端生成的英文**；

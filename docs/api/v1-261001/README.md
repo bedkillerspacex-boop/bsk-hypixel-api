@@ -17,6 +17,8 @@
 
 ## 1. 路径与版本
 
+独立响应样例：[无记录](examples/bancheck-unknown.json)、[缺参数](examples/bancheck-missing.json)；[响应 JSON Schema](schemas/response.json)。标准站内接口信封适用该 schema，透明反代、裸发现响应和提前拒绝响应除外。
+
 | 写法 | 实际走的版本 |
 |---|---|
 | `/api/<端点>` | `v1-261001`（最新） |
@@ -30,24 +32,26 @@
 **不认识的版本**（拼错的日期、未发布的未来日期、`/v2` 之类）→
 
 ```json
-{"ok": false, "error": "unknown_version", "message": "...", "endpoints": ["v1", "v1-261001", "v1-260925"]}
+{"ok": false, "error": "unknown_version", "message": "没有这个版本: v9（支持 v1, v1-261001, v1-260925）", "latest": "v1-261001"}
 ```
 
 HTTP `404`。
 
 > ⚠️ **只有字符串 `v1-260925` 会被当成旧版**（服务端是一次精确字符串比较）。
-> 写别的日期（如 `v1-250101`）会被路由接受，但拿到的是**当前版本的行为**，
-> 不是那一天的行为。要长期稳定请钉 `v1-261001`。
+> 公布的版本是 `v1`、`v1-261001` 和 `v1-260925`；其它日期（如 `v1-250101`）
+> 返回 `404 unknown_version`，不会被当成当前版。
+> 解析器还接受低于当前主版本的无日期段（例如 `/v0`），并套用当前响应；这是未公布兼容分支，不建议使用。
 
 ### 请求方法
 
-- **每个 `/api/<端点>` 都同时接受 `GET` 和 `POST`。**
+- 站内数据接口支持 `GET` 和 `POST`。Hypixel 资源反代只支持 `GET`，Bugland 反代支持两者。
 - `OPTIONS` → `204` 预检（带 CORS 头，不鉴权、不计额度）。
 - 其它方法（`HEAD` / `PUT` / `DELETE` / `PATCH`）→ 标准库的 `501` HTML。
 
 ### POST + JSON
 
-POST 时请求体按 JSON 解析成一个字典，交给处理函数；**处理函数先看 body 再看 query**。
+POST 时请求体按 JSON 解析成一个字典，交给处理函数；通常先看 body 再看 query。
+别名存在例外：denick 的 body.name、player/tags 的 body.nick、card 的 body.q、bancheck 的 body.nick 会被忽略；见[注册表缺口](../parameter-registry.md#已知缺口)。
 请求体为空或不是合法 JSON 时按空字典处理，于是自动回退到 query string。
 
 **没有 Content-Type 校验。** body 里的 `key` 也是合法的鉴权写法。
@@ -67,7 +71,7 @@ POST 时请求体按 JSON 解析成一个字典，交给处理函数；**处理�
 
 - 推荐**请求头**写法，Key 不会进 URL 日志。
 - `Bearer` 前缀大小写不敏感。
-- 网站短期令牌 `wt1_…` 也能用（绑 IP、TTL 900 秒、自带 60/分钟限额）。
+- 网站短期令牌 `wt1_…` 适用于走统一 `_api_key()` 的接口（绑 IP、TTL 900 秒、自带 60/分钟限额）。denick/bancheck 未传 IP 到验证器，不能保证短期令牌可用；Bugland 仅接受独立 Key。
 
 鉴权失败一律 `401`，`error` 取值：`missing_key`、`invalid_key`、`key_disabled`、
 `token_expired`、`token_ip_mismatch`、`invalid_token`。
@@ -83,11 +87,11 @@ POST 时请求体按 JSON 解析成一个字典，交给处理函数；**处理�
 失败：
 
 ```json
-{"ok": false, "error": "missing_param", "message": "..."}
+{"ok": false, "error": "missing_param", "message": "name or uuid is required", "api_version": "v1-261001", "locale": "en", "schema": 1}
 ```
 
 个别错误会附带 `query` / `retry_after` / `why` / `endpoints`。
-所有响应带 `Access-Control-Allow-Origin: *`。
+公开 JSON/反代响应通常带 `Access-Control-Allow-Origin: *`；标准库的 501 HTML 不承诺该头。
 
 | 响应头 | 含义 |
 |---|---|
@@ -97,7 +101,7 @@ POST 时请求体按 JSON 解析成一个字典，交给处理函数；**处理�
 | `Retry-After` | 撞限速时的建议等待秒数 |
 
 > 这两个版本头在**正常路由的响应**上都有（含 `401` / `404` / `410` / `429`）。
-> **例外**：版本解析失败（`unknown_version`）和裸 `GET /api/hypixel` 的信息响应
+> **例外**：版本解析失败（`unknown_version`）、并发拒绝、旧 `/denick/api` 别名、透明反代 `_raw()`，以及裸 `GET /api/hypixel` 的信息响应
 > **不带**它们（实测 `X-API-Version` 缺席）。
 
 > 💡 注意 `X-API-Version`（回显请求段）和 body 里的 `api_version`（写死 `v1-261001`）
@@ -140,7 +144,8 @@ POST 时请求体按 JSON 解析成一个字典，交给处理函数；**处理�
 | > 3 MB 且 ≤ 5 MB | 7 |
 | > 5 MB | 15 |
 
-**成功响应**（HTTP < 400 且响应体已完整写出）才算体积，失败不追加体积费用。
+Hypixel 和站内 JSON：**成功响应**（HTTP < 400 且响应体已完整写出）才追加体积费。
+Bugland 有独立规则：已标记计费的上游原始响应即使失败也可能追加体积费，见第 8 节。
 
 ### `X-Quota-Cost` 的真相（重要）
 
@@ -183,7 +188,7 @@ POST 时请求体按 JSON 解析成一个字典，交给处理函数；**处理�
 
 ## 6. 端点总表
 
-12 个公开端点，全部同时支持 `GET` 和 `POST`：
+路由表包含 12 项（含别名、已下线入口与 Hypixel 说明入口）。资源反代方法见各自章节：
 
 | 端点 | 说明 | 基础额度 | 参数 ID |
 | --- | --- | ---: | --- |
@@ -198,6 +203,7 @@ POST 时请求体按 JSON 解析成一个字典，交给处理函数；**处理�
 | [`/api/nick-history`](./endpoints/nick-history.md) | 某昵称的完整出现历史 | 1 | 1–5, 20, 21 |
 | [`/api/quota`](#9-apiquota) | 查自己的额度 / 并发 / 限流 | 0 | 1–5 |
 | [`/api/hypixel`](#7-hypixel-透明反代) | Hypixel 官方 API 透明反代 | 1 | 1–5, 22 |
+| [`/bjd/v2/*`](./endpoints/bugland-proxy.md) | Bugland API 透明反代（独立 Key） | 1 | 由 Bugland 上游定义 |
 | `/api/card.png` | **已下线**，恒回 `410 gone` | —— | 1–5, 12 |
 
 **发现文档**：`GET /api`（不带端点）回端点清单、**全部 24 个参数定义**、
@@ -222,6 +228,7 @@ curl 'https://hyp-api.firebounce.today/v2/player?uuid=<uuid>&key=<你的 bsk_ ke
 ```
 
 别名入口 `/api/hypixel/v2/...` 等价（少写 `/v2` 会自动补上）。
+GET 别名子路径在版本解析之前转发：`GET /api/hypixel/v1` 实际请求上游 `/v2/v1`，不是发现入口；不能给资源反代追加本站版本号。
 **推荐直接用 `hyp-api.firebounce.today`**，少一层跳转。
 
 鉴权用**本站的 bsk_ Key**，不是 Hypixel 的 Key。
@@ -297,21 +304,19 @@ curl 'https://hyp-api.firebounce.today/v2/player?uuid=<uuid>&key=<你的 bsk_ ke
 {"ok": false,
  "message": "这个别名要带上 Hypixel 的路径才有意义，而且更推荐**直接用反代域名**（少一层、更快）。",
  "use": "https://hyp-api.firebounce.today/v2/...",
- "aliases": ["https://hyp-api.firebounce.today/v2/player?uuid=<uuid>"]}
+ "aliases": ["https://hyp-api.firebounce.today/v2/player?uuid=<uuid>", "https://api.firebounce.today/api/hypixel/v2/player?uuid=<uuid>"]}
 ```
 
 - HTTP **`200`**，**不鉴权、不消耗额度、不打上游**。
 - 覆盖 `/api/hypixel`、`/api/hypixel/`、`/api/hypixel/v1`、`/api/hypixel/v1-261001`、`/api/hypixel/v1-260925`。
 - 上游转发**仍然只接受 GET**。
 
-> ⚠️ **取决于部署版本。** 更早的实现里 POST 分支把 **JSON 请求体当成路径**传下去，
+> ⚠️ **历史说明。** 更早的实现里 POST 分支把 **JSON 请求体当成路径**传下去，
 > 在 `subpath.rstrip` 上抛异常 —— 客户端拿到的是**连接被直接关闭、没有任何响应**。
 > 该缺陷在实现提交 `05ef64b` 修复，并已发布（`20261002061325-4b267c5414`，
 > revision `05ef64b`）—— **线上已实测为 `200` 发现响应**。
 >
-> 只有在更早的发布上才会遇到断连。判断方法：看
-> [实现基线](../../../README.md#实现基线与维护) 里的当前发布 ID，
-> 或直接发一个 `POST /api/hypixel` 看回的是 200 还是连接被关。
+> 当前基线 `75ec603` 已包含修复；现行发布不会再因为这个路径类型错误而断连。
 
 ### 其它
 
@@ -392,6 +397,10 @@ Bugland **不是** Hypixel 那套：
 | `502` | 上游失败 |
 | `503` | 反代模块或配额存储不可用 |
 
+### Key 申请、查询与重发
+
+普通用户 `/bjdkey new <QQ号>` 复用 QQ/email 归属验证；未验证时提供邮件 6 位码或主动发信验证，两种方式十分钟内有效。`/bjdkey verify [码]` 验证后进入独立待审队列，管理员 `/bjdkey approve <编号>` 签发并通过已验证邮箱发放。`/bjdkey status` 看本人状态；私聊 `/bjdkey resend` 可取完整 Key，群内重发只寄已验证邮箱，受邮件冷却限制。管理员可以 list、停用/启用、换 Key、绑定 QQ、配置各 Key/QQ/default 的额度与并发。
+
 ### 上游 Token 体检（背景）
 
 Bugland 的上游 Token 池会定期体检：
@@ -449,12 +458,15 @@ GET /api/quota
 带 `Retry-After` 头。**鉴权失败不消耗这个限额**（先鉴权再计数）。
 `X-Quota-Cost` 在它的**任何**响应上（`200`/`401`/`429`/`500`）都是 `0`。
 `200` 响应还有 `Cache-Control: no-store`。
+这里的全状态 `X-Quota-Cost: 0` 指已经进入 quota 处理函数的响应；若在前置并发闸门被拒，走 `_raw()`，理论头仍可能为 `1`（实际没有扣额）。
 
 ## 10. `/api/bancheck`
 
 **`/api/checkban` 是它的完整别名**，行为一模一样。
 
 ### 数据来源：本地索引，不是官方实时验证
+
+HTTP 查询不调用 Mojang 解析当前名；名字只在本地 `by_name` 映射中查，可能没有收录改名。跨改名追踪应直接传 UUID。
 
 服务端查的是**磁盘上的本地封禁索引**（`bantrack_index.json`），
 查询时不打 Discord、也不打 Hypixel。**这不是"官方封禁验证"**。
@@ -463,7 +475,7 @@ GET /api/quota
 
 | `source` | 来源 | 可信度 |
 | --- | --- | --- |
-| `tracker` | tracking 服务器的 `#bans` 消息，带精确的封禁时间戳 | **权威** |
+| `tracker` | tracking 服务器的 bans/unbans 消息，带事件时间戳 | 相比 hyp_dc 优先；仍非官方实时验证 |
 | `hyp_dc` | Hypixel 官方 Discord 的成员昵称解绑启发式（判定条件：`0 < 最后在线 - 解绑时刻 < 60 秒`） | **较低**，是推断 |
 
 `source` 报的是**主来源**（有 tracker 就用 tracker，否则用 hyp_dc），
@@ -494,9 +506,9 @@ GET /api/quota
 | `data_quality` | string | `complete` / `partial` / `no_record`（**本版新增**） |
 | `source` | string \| null | 主来源：`tracker` / `hyp_dc` / `null` |
 | `sources` | array | 全部证据，每项 `{source, at, banned, gamemode, star, delta}` |
-| `banned_at` | number \| null | 主来源的封禁时刻（Unix 秒） |
+| `banned_at` | number \| null | 主来源最近事件时刻（Unix 秒）；若 `banned: false` 则可能是解封时刻，不能当封禁时刻 |
 | `name` / `uuid` / `query` | string | 回显 |
-| `cost` | number | 本次扣除的额度 |
+| `cost` | number | 本次基础额度；不含后续体积附加费 |
 
 > ⚠️ **`banned_days_ago` 不是 `/api/bancheck` 的字段**（老文档没提，别以为有）。
 > 它只出现在 [`/api/player/card`](./endpoints/player-card.md) 的 `ban_status` 块里。
@@ -525,11 +537,13 @@ GET /api/quota
     "state": "banned",
     "data_quality": "complete",
     "source": "tracker",
+    "name": "ExamplePlayer",
+    "uuid": "00000000000000000000000000000001",
     "sources": [{"source": "tracker", "at": 1790473417, "banned": true,
                  "gamemode": "bedwars", "star": null, "delta": null}],
     "banned_at": 1790473417,
     "query": "theoshadow",
-    "cost": 0.7
+    "cost": 1.0
   }
 }
 ```
@@ -598,6 +612,8 @@ GET /api/quota
 | 展示用文本 | `data.message`、块里的 `title` / `label` —— **仅供显示** |
 
 地区示例也是英文，例如 `region_guess: [{"region": "Asia", "pct": 10}]`。
+但当前 `/api/player` 的 `region_guess[]` 不经过递归翻译，实际仍可能是 `亚洲` 等中文；这里的英文是客户端翻译目标，不能视为服务保证。卡片展示字段走另外的英文转换。
+卡片 `cells[].id` 从原始 label 计算，中文 label 可能产生空字符串；它不是完整可靠的参数 ID 注册表。请求参数的永久数字 ID（1–24）与展示字段 ID 是两套机制。
 
 ## 12. 内部端点（不属于公开 API）
 
@@ -609,7 +625,7 @@ GET /api/quota
 - **管理运维**：`/groups`、`/panel`、`/card`、`/report`、`/broadcast`、`/health`、`/healthz`
   （令牌保护，可能随时变更）
 
-**旧别名** `/denick/api` 等价于 `/api/denick`（`GET` + `POST`），为兼容历史客户端保留。
+**旧别名** `/denick/api`（`GET` + `POST`）调用同一查询函数，但不设置版本上下文，因此没有新版信封/英文翻译/版本头；它不是当前版响应的严格别名。
 
 ## 13. 错误码总表
 
@@ -652,9 +668,8 @@ GET /api/quota
 
 | 项 | 值 |
 |---|---|
-| 核对提交 | `58c78eccff6cd60621d8da0fbc60021ee498c6c0`（`58c78ec`） |
-| 该提交下最新代码提交 | `38b046d` |
-| 生产发布 ID | `20261002054735-d9fe0d46e2` |
+| 核对提交 | `75ec6037a5cd6f6e59bfde10bf8fb03a74c4d7a9`（`75ec603`） |
+| 生产发布 ID | `20261002064434-4520d9e5dc`（revision `75ec603`） |
 | 核对日期 | 2026-10-02 |
 
 **代码与本文档冲突时以代码为准。** 改动路由、参数、响应、额度、限速、缓存或文案语言时，

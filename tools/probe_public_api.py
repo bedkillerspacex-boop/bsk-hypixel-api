@@ -50,6 +50,13 @@ CASES = [
      "quota is free: X-Quota-Cost must be 0 even on 401"),
     ("GET", "/api/player", None, 401, "missing_key",
      "player authenticates first"),
+    ("GET", "/api/denick/v1-250101", None, 404, "unknown_version", "unregistered date is rejected"),
+    ("GET", "/api/bancheck/v1-261001", None, 400, "missing_param", "modern English parameter error"),
+    ("GET", "/api/bancheck/v1-260925", None, 400, "missing_param", "legacy Chinese parameter error"),
+    ("GET", "/api/bancheck/v1", None, 400, "missing_param", "latest major alias"),
+    ("POST", "/api/hypixel", b"{}", 200, None, "POST discovery must return JSON"),
+    ("POST", "/api/hypixel/v1", b"{}", 200, None, "versioned POST discovery"),
+    ("POST", "/api/hypixel/v1-260925", b"{}", 200, None, "legacy POST discovery"),
 ]
 
 
@@ -62,9 +69,10 @@ def call(base, method, path, body, timeout=20, attempts=3):
     """
     last = (None, {}, "")
     for attempt in range(attempts):
-        req = urllib.request.Request(base + path, method=method, data=body,
-                                     headers={"Content-Type": "application/json"}
-                                     if body else {})
+        headers = {"User-Agent": "Mozilla/5.0 (compatible; BSK-Documentation-Check/1.0)"}
+        if body:
+            headers["Content-Type"] = "application/json"
+        req = urllib.request.Request(base + path, method=method, data=body, headers=headers)
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return r.status, dict(r.headers), r.read(65536).decode("utf-8", "replace")
@@ -97,7 +105,14 @@ def main():
         cost_ok = True
         if path.startswith("/api/quota"):
             cost_ok = headers.get("X-Quota-Cost") == "0"
-        ok = status_ok and error_ok and cost_ok
+        contract_ok = True
+        if method == "POST" and path.startswith("/api/hypixel"):
+            contract_ok = isinstance(data, dict) and data.get("ok") is False and "use" in data
+        if path in ("/api/bancheck/v1", "/api/bancheck/v1-261001", "/api/bancheck/v1-260925") and isinstance(data, dict):
+            legacy = path.endswith("v1-260925")
+            contract_ok = ("api_version" not in data) if legacy else data.get("api_version") == "v1-261001"
+            contract_ok = contract_ok and headers.get("X-API-Version") == path.rsplit("/", 1)[-1]
+        ok = status_ok and error_ok and cost_ok and contract_ok
         failures += 0 if ok else 1
 
         print("%s %-6s %-22s  %s" % ("PASS" if ok else "FAIL", method, path, note))
@@ -106,6 +121,8 @@ def main():
         if not cost_ok:
             print("      X-Quota-Cost=%r but /api/quota must always be 0"
                   % headers.get("X-Quota-Cost"))
+        if not contract_ok:
+            print("      response shape/version headers differ from documented contract")
         if not status_ok and status is None:
             print("      no HTTP response: %s" % text[:160])
         if data and isinstance(data, dict) and "latest" in (data.get("data") or {}):
@@ -115,16 +132,14 @@ def main():
                      d.get("versions"), len(d.get("parameters") or [])))
 
     # ------------------------------------------------------------------
-    # State probe: this endpoint's behaviour legitimately differs depending on
-    # whether implementation commit 05ef64b is deployed. BOTH states are
-    # documented, so this reports which one production is in instead of
-    # failing -- a failure here would just mean "not deployed yet".
+    # Historical state diagnostic. A current POST discovery failure is already
+    # a failed CASE above; connection closure is never a successful check.
     # ------------------------------------------------------------------
     print()
     status, headers, text = call(args.base, "POST", "/api/hypixel", b"{}")
     state = None
     if status is None:
-        state = "PRE-FIX (connection closed, nothing returned)"
+        state = "NO RESPONSE (could be network failure or old implementation)"
     else:
         try:
             body = json.loads(text)
@@ -140,8 +155,7 @@ def main():
         print("      expected either the pre-fix close or the 200 discovery JSON")
     else:
         print("      %s" % state)
-        print("      => production %s contain commit 05ef64b"
-              % ("DOES" if state.startswith("FIXED") else "does NOT"))
+        print("      observed behavior only; response does not prove an exact commit")
 
     print()
     print("%d/%d probes matched the documentation"

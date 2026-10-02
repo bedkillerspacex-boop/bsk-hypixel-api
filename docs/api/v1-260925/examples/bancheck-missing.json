@@ -1,0 +1,5 @@
+{
+  "ok": false,
+  "error": "missing_param",
+  "message": "需要 name 或 uuid"
+}

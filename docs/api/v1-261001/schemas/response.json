@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BSK modern site-generated JSON envelope (not transparent proxies)",
+  "type": "object",
+  "required": ["ok", "api_version", "locale", "schema"],
+  "properties": {
+    "ok": {"type": "boolean"},
+    "api_version": {"const": "v1-261001"},
+    "locale": {"const": "en"},
+    "schema": {"const": 1},
+    "data": {"type": ["object", "array"]},
+    "error": {"type": "string"},
+    "message": {"type": "string"}
+  },
+  "allOf": [
+    {"if": {"properties": {"ok": {"const": true}}}, "then": {"required": ["data"]}},
+    {"if": {"properties": {"ok": {"const": false}}}, "then": {"required": ["error"]}}
+  ],
+  "additionalProperties": true
+}

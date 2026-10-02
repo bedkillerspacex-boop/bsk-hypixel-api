@@ -13,6 +13,8 @@
 
 **这个接口真的会出网**打 Hypixel、Urchin、Mojang，所以是 1.5。
 
+当前 `region_guess[]` 未递归翻译，region 仍可能为中文 `亚洲`；客户端可自行显示为 `Asia 10%`。不能依赖 `locale: en` 推断该数组的语言。
+
 ## 请求参数
 
 | ID | 参数 | 位置 | 必填 |
@@ -50,7 +52,7 @@
 | `guild` | object \| null | `{name, tag, members}` |
 | `tags` | array | 反作弊标签 |
 | `country` / `ping_ms` / `ping_region` | —— | 地区与延迟（拿不到时缺省或 `null`） |
-| `region_guess` | array \| null | `[{region, pct}]`，例如 `{"region": "Asia", "pct": 10}` |
+| `region_guess` | array \| null | `[{region, pct}]`，例如 `{"region": "亚洲", "pct": 10}` |
 | `names` | array | 已知正版名 |
 | `name_history` | array \| null | `[{name, ts}]` |
 | `bedwars` | object \| null | 见下 |
@@ -92,7 +94,7 @@ curl 'https://api.firebounce.today/api/player?name=ExamplePlayer' \
     "mode": "Solo",
     "guild": {"name": "Example Guild", "tag": "EX", "members": 42},
     "tags": [],
-    "region_guess": [{"region": "Asia", "pct": 10}],
+    "region_guess": [{"region": "亚洲", "pct": 10}],
     "bedwars": {"level": 145, "wins": 1200, "losses": 900, "games": 2100,
                 "fkdr": 5.43, "wlr": 1.33, "bblr": 2.1, "final_kills": 12189,
                 "final_deaths": 2244, "beds_broken": 6732, "beds_lost": 4392,

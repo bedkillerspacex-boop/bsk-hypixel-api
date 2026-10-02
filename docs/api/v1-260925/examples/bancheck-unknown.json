@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "data": {
+    "known": false,
+    "banned": null,
+    "query": "ExamplePlayer",
+    "source": null,
+    "sources": [],
+    "cost": 1.0
+  }
+}

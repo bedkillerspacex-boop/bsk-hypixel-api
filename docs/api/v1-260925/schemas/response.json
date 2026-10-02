@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "BSK legacy site-generated JSON envelope (shared current services)",
+  "type": "object",
+  "required": ["ok"],
+  "properties": {
+    "ok": {"type": "boolean"},
+    "data": {"type": ["object", "array"]},
+    "error": {"type": "string"},
+    "message": {"type": "string"}
+  },
+  "allOf": [
+    {"if": {"properties": {"ok": {"const": true}}}, "then": {"required": ["data"]}},
+    {"if": {"properties": {"ok": {"const": false}}}, "then": {"required": ["error"]}},
+    {"not": {"required": ["api_version"]}},
+    {"not": {"required": ["locale"]}},
+    {"not": {"required": ["schema"]}}
+  ],
+  "additionalProperties": true
+}
