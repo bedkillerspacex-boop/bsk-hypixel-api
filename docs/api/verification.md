@@ -14,6 +14,10 @@ The current alignment uses service commit [`75ec603`](https://github.com/bedkill
 
 The historical `REFERENCE.md` is byte-preserved documentation history and is exempt from normalization checks. It contains later historical material, so it must not be treated as a precise release-day production contract.
 
+### CI scope
+
+The required documentation job validates links, JSON, schemas and documentation contracts without accessing the private service repository. The separate implementation comparison requires the repository secret `DOCS_IMPLEMENTATION_TOKEN`, with read-only Contents access to `bsk-qqbot`. Without that secret (including fork PR events where it is unavailable), its summary explicitly reports **NOT RUN**. A successful documentation job does not establish source alignment. Configured but invalid credentials or a failed comparison remain failures. The baseline comparison recorded above was actually run locally.
+
 ## Known implementation gaps documented honestly
 
 - Some modern error messages and array values can remain Chinese even though the modern envelope says `locale: en`.

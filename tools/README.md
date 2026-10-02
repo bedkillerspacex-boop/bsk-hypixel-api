@@ -40,6 +40,13 @@ python -B tools/check_contract.py --implementation ../bsk-qqbot
 它会校验两版独立 JSON/schema，逐项比较服务端参数 ID/注册键与路由，并执行真实 bancheck/JSON 处理函数对照四个固定响应。只加载纯模块定义或选定 AST 函数，替换额度存储与索引，不加载生产配置、后台任务或凭据。
 它不能替代服务仓库的运行时测试，也不会声称真实凭据或生产成功路径已经验证。
 
+### GitHub Actions 权限边界
+
+CI 的必跑任务校验链接、JSON、两个版本的 schema 和文档契约，不需要服务仓库权限。
+服务仓库是私有仓库，文档仓库的默认 `GITHUB_TOKEN` 不能跨仓库读取它。独立的实现对照任务仅在配置了 `DOCS_IMPLEMENTATION_TOKEN` 时执行；该令牌只需对 `bsk-qqbot` 的 Contents 只读权限，checkout 不持久化令牌。
+未配置令牌或 fork PR 无法取得令牌时，任务摘要明确显示 **NOT RUN**，不把文档静态检查通过解释为实现对照通过。已配置但权限错误、源码对照失败时，任务仍然失败。
+本次实现对照在本地针对已记录的基线执行并通过；不需要将个人 GitHub 凭据自动复制到 CI。
+
 ## `probe_public_api.py` —— 线上只读探测
 
 ```bash
