@@ -114,6 +114,35 @@ def main():
                   % (d.get("latest"), d.get("latest_alias"),
                      d.get("versions"), len(d.get("parameters") or [])))
 
+    # ------------------------------------------------------------------
+    # State probe: this endpoint's behaviour legitimately differs depending on
+    # whether implementation commit 05ef64b is deployed. BOTH states are
+    # documented, so this reports which one production is in instead of
+    # failing -- a failure here would just mean "not deployed yet".
+    # ------------------------------------------------------------------
+    print()
+    status, headers, text = call(args.base, "POST", "/api/hypixel", b"{}")
+    state = None
+    if status is None:
+        state = "PRE-FIX (connection closed, nothing returned)"
+    else:
+        try:
+            body = json.loads(text)
+        except Exception:
+            body = None
+        if (status == 200 and isinstance(body, dict) and body.get("ok") is False
+                and "use" in body):
+            state = "FIXED (200 discovery JSON, no auth, no upstream call)"
+    print("STATE  POST   /api/hypixel")
+    if state is None:
+        failures += 1
+        print("      UNEXPECTED: status=%s body=%r" % (status, text[:160]))
+        print("      expected either the pre-fix close or the 200 discovery JSON")
+    else:
+        print("      %s" % state)
+        print("      => production %s contain commit 05ef64b"
+              % ("DOES" if state.startswith("FIXED") else "does NOT"))
+
     print()
     print("%d/%d probes matched the documentation"
           % (len(CASES) - failures, len(CASES)))

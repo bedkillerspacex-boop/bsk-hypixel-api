@@ -289,11 +289,32 @@ curl 'https://hyp-api.firebounce.today/v2/player?uuid=<uuid>&key=<你的 bsk_ ke
 {"ok": false, "message": "...", "use": "...", "aliases": ["..."]}
 ```
 
-### 已知问题
+### `POST /api/hypixel`（无子路径）
 
-- **`POST /api/hypixel`（裸路径或 `/v1`）会抛 `AttributeError`**（子路径是空字典），
-  没有被兜住 —— 客户端拿到的是连接异常而不是文档化的错误响应（服务端会记录一条事故）。
-  走 `/api/hypixel/v2/...` 就不受影响。
+这个入口在没有子路径时回一段**发现说明**，POST 与 GET 行为相同：
+
+```json
+{"ok": false,
+ "message": "这个别名要带上 Hypixel 的路径才有意义，而且更推荐**直接用反代域名**（少一层、更快）。",
+ "use": "https://hyp-api.firebounce.today/v2/...",
+ "aliases": ["https://hyp-api.firebounce.today/v2/player?uuid=<uuid>"]}
+```
+
+- HTTP **`200`**，**不鉴权、不消耗额度、不打上游**。
+- 覆盖 `/api/hypixel`、`/api/hypixel/`、`/api/hypixel/v1`、`/api/hypixel/v1-261001`、`/api/hypixel/v1-260925`。
+- 上游转发**仍然只接受 GET**。
+
+> ⚠️ **取决于部署版本。** 更早的实现里 POST 分支把 **JSON 请求体当成路径**传下去，
+> 在 `subpath.rstrip` 上抛异常 —— 客户端拿到的是**连接被直接关闭、没有任何响应**。
+> 该缺陷在实现提交 `05ef64b` 修复，并已发布（`20261002061325-4b267c5414`，
+> revision `05ef64b`）—— **线上已实测为 `200` 发现响应**。
+>
+> 只有在更早的发布上才会遇到断连。判断方法：看
+> [实现基线](../../../README.md#实现基线与维护) 里的当前发布 ID，
+> 或直接发一个 `POST /api/hypixel` 看回的是 200 还是连接被关。
+
+### 其它
+
 - `POST /v2/...` 不被代理 → 落到插件路由后回 `404 {"error":"not found","path":...}`，不鉴权不扣额度。
 - `POST /api/hypixel/v2/player` → `404 {"ok":false,"error":"not_found"}`。
 
