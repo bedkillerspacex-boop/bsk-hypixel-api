@@ -181,7 +181,7 @@ Java 用的是 `<JRE>\lib\security\cacerts`，跟系统库毫无关系。
 新装了启动器就 `.\bsk-proxy.ps1 拦截 -ForceRescan` 重扫。
 自动扫不到的地方，在 `config.json` 里加 `extraJavaRoots`：
 
-```json
+```jsonc
 "extraJavaRoots": ["E:\\某个启动器", "D:\\另一个整合包"]
 ```
 

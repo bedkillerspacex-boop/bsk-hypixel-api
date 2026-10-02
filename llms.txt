@@ -1,26 +1,75 @@
 # BSK 开放接口
 
-> 人类看的文档在 README.md；这个文件是给 AI / 爬虫看的**入口索引**。
+> 人类看的文档在 [README.md](./README.md)；这个文件是给 AI / 爬虫看的**入口索引**。
+>
+> **文档按版本归档**，不要只看最新版：
+> [版本总览](./docs/api/README.md) ·
+> [当前版 `v1-261001`](./docs/api/v1-261001/README.md) ·
+> [历史版 `v1-260925`（冻结）](./docs/api/v1-260925/README.md) ·
+> [旧版原文快照](./docs/api/v1-260925/REFERENCE.md) ·
+> [24 个永久参数 ID](./docs/api/parameter-registry.md)
 
-## 两个服务（别搞混）
+## 版本（先看这个）
 
-本仓库叫 **bsk-hypixel-api**，承载**两个**对外服务：
+| 版本 | 状态 | 服务端生成文案 | 响应信封 |
+|---|---|---|---|
+| **`v1-261001`** | **当前版** | 英文 | 有 `api_version` / `locale` / `schema` |
+| `v1-260925` | **冻结** | 中文 | 无 |
 
-1. **denick 查询** —— 本站自有的昵称反查 / 资料聚合接口；
-2. **Hypixel 官方 API 反代** —— 把 `api.hypixel.net` 原样镜像过来的入口。
+- `/api/<端点>` 和 `/api/<端点>/v1` → **最新版 `v1-261001`**
+- `/api/<端点>/v1-261001` → 钉死当前版（生产推荐）
+- `/api/<端点>/v1-260925` → 钉死旧版（**中文契约**）
 
-名字里的 "hypixel" 两个都沾边，但**两者的接口格式完全不同**，别照抄：
+> ⚠️ **`v1` 不等于 `v1-260925`。** `v1` 是"最新版"的别名，会给**英文**文案。
+> 只有字符串 `v1-260925` 才走旧契约；其它日期版会被接受但返回**当前版行为**。
+>
+> 响应头 `X-API-Version` **回显你请求的那一段**（写 `/v1` 就回 `v1`）；
+> body 里的 `api_version` 才是写死的完整版本号。
 
-- 服务 1 用下面写的 `{ok, data}` 格式；
-- 服务 2 **就是 Hypixel 官方格式**，端点和字段一律以 Hypixel 官方文档为准。
+**参数 ID**：每个请求参数有永久的数字 ID（**24 个，1–24 连续**），只追加、不复用、不改含义。
+`GET /api` 的 `data.parameters` 回机器可读的同一份注册表。
+参数 ID 标识的是**请求参数**，跟响应里的 `state` / `source` 等业务字段无关。
+
+## 三个服务（别搞混）
+
+本仓库叫 **bsk-hypixel-api**，承载**三个**对外服务：
+
+1. **denick 查询** —— 本站自有的昵称反查 / 资料聚合接口（`{ok, data}` 格式）；
+2. **Hypixel 官方 API 反代** —— 把 `api.hypixel.net` 原样镜像（**Hypixel 官方格式**）；
+3. **Bugland 反代** —— 把 `api.mcbjd.net` 镜像（`bsk_bjd_` Key，独立计费）。
 
 ### 1. denick 查询 API（本站自有接口）
 
 - Base: `https://api.firebounce.today`
-- 文档: 本仓库 [README.md](./README.md)
-- 用途: Hypixel 昵称（nick）↔ 真实 ID / UUID 反查、玩家资料聚合、反作弊标签、卡片图
+- 文档: 本仓库 [README.md](./README.md)；端点分册在 [`docs/api/v1-261001/endpoints/`](./docs/api/v1-261001/endpoints/)
+- 用途: Hypixel 昵称（nick）↔ 真实 ID / UUID 反查、玩家资料聚合、反作弊标签、卡片数据
 - 认证: `bsk_` 开头的 Key，`/apikey` 申请
+- 方法: 每个 `/api/<端点>` **GET 和 POST 都支持**
 - 示例代码: [examples/](./examples/)
+
+**公开端点（12 个）**：
+
+| 端点 | 说明 | 基础额度 |
+|---|---|---:|
+| `/api/denick` | 昵称 → 真名 / UUID | 1 |
+| `/api/player` | 身份 + 战绩 + 可疑度 + 标签 | 1.5 |
+| `/api/player/card` | 整张卡片的 JSON | 1.5 |
+| `/api/tags` | 只要反作弊标签 | 1.5 |
+| `/api/bancheck`（别名 `/api/checkban`） | 封禁索引查询 | UUID 0.7 / 名字 1.0 |
+| `/api/search` | 昵称 / 真名模糊搜索 | 1 |
+| `/api/recent` | 最近记录到的昵称 | 1 |
+| `/api/nick-history` | 某昵称的完整出现历史 | 1 |
+| `/api/quota` | 查自己的额度 / 并发 / 限流 | 0（免费） |
+| `/api/hypixel` | Hypixel 反代别名入口 | 1 |
+| `/api/card.png` | **已下线**，恒回 `410` | —— |
+
+`GET /api` 会回端点清单 + 全部参数定义 + 两个反代的 base（机器可读）。
+
+**封禁查询要点**：查的是**本地索引**（不是官方实时验证）。
+`state` 是机器字段（`banned` / `not_banned` / `unknown`），
+**`unknown` 不等于安全**；「没记录」时 `banned` 为 `null`、`known` 为 `false`，
+但 HTTP 仍是 `200`。展示文案会把非 banned 都写成 `Not banned`，**别解析文案**。
+`banned_days_ago` **不是**这个接口的字段（只在卡片里）。
 
 **查自己的额度（写客户端时先看这个）**：
 
@@ -31,7 +80,8 @@ GET https://api.firebounce.today/api/quota?key=bsk_你的key
 返回**你这把 Key 此刻**的额度 / 剩余 / 并发水位 / 两道全站闸门水位：
 
 ```json
-{"ok": true, "cost": 0, "data": {
+{"ok": true, "api_version": "v1-261001", "locale": "en", "schema": 1,
+ "cost": 0, "data": {
   "per_min": 225, "per_min_src": "default", "used": 6.0, "remaining": 219.0,
   "window_seconds": 60, "reset_at": 1790603500, "unlimited": false,
   "charged": 6.0, "reserved": 0.0, "weighted": true,
@@ -46,15 +96,22 @@ GET https://api.firebounce.today/api/quota?key=bsk_你的key
 
 要点（细节见 [README 的《查自己的额度》](./README.md#查自己的额度-apiquota)）：
 
-- **免费**（`cost: 0`），**不进任何全站闸门** —— 全站正忙也照样能查；
-- **但它自己限速 10 次/分钟**，超了回 `429` + `Retry-After` 头；
+- **免费**（`cost: 0`），**不消耗两道每分钟全站闸门**；
+- **但它仍然要过进程级并发闸门** —— 并发打满时它会回
+  `429 {"ok": false, "error": "busy", "retry_after": 1}`，不是"永远能查"；
+- **它自己限速 10 次/分钟**，超了回 `429` + `Retry-After` 头；
 - 不限额度时 `per_min: 0`、`remaining: null`（配 `unlimited: true`），不是错误；
 - `used = charged + reserved`（**含在飞预留**，和服务端的判定口径一致）；
+- `global_gate` / `proxy_gate` 是**只读水位**；对应钩子异常时这两个键**会缺失**；
 - 只回调用方自己的信息；坏 Key / 停用的 Key 一律 `401`，不回任何数据；`key` 打码；
-- `Cache-Control: no-store`；三种鉴权（`API-Key` / `Bearer` / `?key=`）和网站短期令牌都认；
-- 版本化写法：`/api/quota` / `/api/quota/v1` / `/api/quota/v1-260925`。
+- `Cache-Control: no-store`；五种鉴权写法（`?key=` / `?apikey=` / `Bearer` /
+  `API-Key` / `X-API-Key`）和网站短期令牌都认；
+- 版本化写法：`/api/quota` / `/api/quota/v1` / `/api/quota/v1-261001` / `/api/quota/v1-260925`。
 
-另外 `X-Quota-Cost`（每次请求花了多少）现在也在 CORS 暴露头里，浏览器能直接读。
+另外 `X-Quota-Cost`（每次请求花了多少）在 CORS 暴露头里，浏览器能直接读。
+
+> ⚠️ **`X-Quota-Cost` 是理论价，不等于实扣** —— 它在 `401` / `404` / `429` 上也会显示
+> 体积价，但那些情况常常一分没扣。要准确数字请调 `/api/quota`。
 
 ### 2. Hypixel 官方 API 反代（**镜像 Hypixel 官方接口**）
 
@@ -71,7 +128,7 @@ GET https://api.firebounce.today/api/quota?key=bsk_你的key
 | Hypixel 官方开发者后台 | https://developer.hypixel.net/ |
 
 **唯一要改的是 base url**：把 `api.hypixel.net` 换成 `hyp-api.firebounce.today`。
-请求路径、查询参数、返回的 JSON **全部原样透传** —— 端点和字段含义一律以
+请求路径、查询参数、状态码与响应体**全部原样透传** —— 端点和字段含义一律以
 Hypixel 官方文档为准，不要参考本仓库其它接口的格式。
 
 ```bash
@@ -80,31 +137,52 @@ curl -H "API-Key: bsk_你的key" \
   "https://hyp-api.firebounce.today/v2/player?uuid=069a79f444e94726a5befca90e38aaf5"
 ```
 
-支持的端点: **官方 v2 的全部 34 个**（不做白名单）—— `/v2/player`、
-`/v2/status`、`/v2/recentgames`、`/v2/guild`、`/v2/counts`、
-`/v2/leaderboards`、`/v2/boosters`、`/v2/punishmentstats`、
-`/v2/resources/*`（achievements / challenges / games / quests /
-vanity / skyblock …）、`/v2/skyblock/*`（profiles / profile / bazaar /
-auctions / auctions_ended / auction / museum / news / firesales / bingo /
-garden）、`/v2/housing/*`（active / houses / house）。
-参数与字段一律见 README 的《覆盖范围》表或官方文档。
+**端点：官方 v2 全部**（不做白名单）—— `/v2/player`、`/v2/status`、
+`/v2/recentgames`、`/v2/guild`、`/v2/counts`、`/v2/leaderboards`、`/v2/boosters`、
+`/v2/punishmentstats`、`/v2/resources/*`、`/v2/skyblock/*`、`/v2/housing/*`。
 
 注意: `/v2/housing/*` 返回的是**裸数组**（没有 `success` 外壳），
 这是 Hypixel 的行为，我们原样透传。
-另外这个反代**只接受 GET**（官方 v2 本来就是 GET-only）；非 GET 会拿到本站的
-404/501，形状不是官方的 `{success,cause}`。
+这个反代**只接受 GET**；非 GET 会拿到本站的 404/501，形状不是官方的 `{success,cause}`。
 
-认证头三种都认: `API-Key` / `Authorization: Bearer` / `?key=`。
-`ratelimit-*` 响应头照原样透传。
-基础额度 **1**（不是 1.5 —— 1.5 是本站 `/api/player` 那三个加工接口的价），
-按响应体积加权，`X-Quota-Cost` 头会告诉你这次扣了多少。4xx 也扣。
+**响应头不是全部透传。** 只有白名单里的几个会带走：`content-type`、
+`ratelimit-limit`、`ratelimit-remaining`、`ratelimit-reset`、`retry-after`、`cache-control`。
+`Content-Length` 会重算，另外加上 CORS 与 `X-Quota-Cost`；
+**`Set-Cookie` / `Date` / `Server` 等其余上游头全部丢弃**。
 
-失败时最多换 2 次 Key 重试（共 3 次），仍失败则**原样返回** Hypixel 的错误响应。
+**计费**：基础额度 **1**（不是 1.5 —— 1.5 是本站 `/api/player` 那三个加工接口的价），
+按响应体积加权（≤3 MB 扣 1、>3 MB 扣 7、>5 MB 扣 15）。
+**成功响应先写回客户端、再按完整额度结算；失败按基础额度的 50% 计费，且不追加体积费。**
+
+**重试与超时**：单把 Key 超时 **12 秒**，最多尝试 **3 把不同 Key**（任何失败都换一把
+没试过的，不只是 401/403/429），总预算 **30 秒**。三把都失败则**原样返回** Hypixel 的
+最后一次响应；全是网络错误则 `502`。
+
+**缓存**：成功响应缓存**固定 300 秒**（最多 512 条）。
+**只有「上游 `200` 且响应体非空」才缓存** —— 非 `200`、空体 `200`、名字冷却 `429`、
+网络错误都不缓存。**命中缓存照样扣 1/7/15。**
+
 **出错时也是 Hypixel 的形状**（`{"success":false,"cause":"..."}`）—— 所以只认
 官方格式的解析代码不会炸。但 `cause` 是英文的，且会**点名是反代这一侧的额度**
 （官方那句 `"Key throttle"` 会让人误以为自己的 Hypixel Key 被限流）。
 
-**额度按响应体积加权**（本站计费，不是 Hypixel 的额度）：普通响应扣 1，
-> 3 MB 扣 7，> 5 MB 扣 15。每次响应带 `X-Quota-Cost` 头告诉你这次花了多少。
 `/v2/resources/skyblock/items` 有 ~5 MB（一次扣 15）—— 这类静态资源**请本地缓存**。
-额度用完返回 `429`，`cause` 里写明了是反代的额度、怎么等、怎么提额。
+
+### 3. Bugland 反代
+
+- Base 路径: `/bjd/v2`（→ 上游 `https://api.mcbjd.net/v2/`）
+- 认证: **`bsk_bjd_`** 开头的 Key（与 Hypixel 的 `bsk_` Key **完全独立**）
+- 方法: **GET 和 POST 都支持**
+- 详细说明: 见 [README.md 的《Bugland 接口反代》一节](./README.md#bugland-接口反代)
+
+```bash
+curl "https://api.firebounce.today/bjd/v2/player?uuid=<uuid>&key=bsk_bjd_你的key"
+```
+
+**计费与 Hypixel 不同**：每笔授权请求**先扣满 1 次**（**没有 50% 失败折扣**），
+配额是**整数计**，且**错误响应（4xx/5xx）也收体积附加费**。无缓存。
+每 Key 默认 **30/分钟**、并发 **20**，请求体上限 **4 MiB**（超出 `413`）。
+错误形状同样是 `{"success":false,"cause":"..."}`。
+
+**与 Hypixel 独立的范围**：Key 存储、上游凭据、限速状态、每分钟闸门都是分开的；
+**共用**的只有进程级并发闸门。

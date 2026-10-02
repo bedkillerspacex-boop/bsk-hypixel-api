@@ -1,0 +1,5 @@
+# Frozen historical API snapshots must be byte-identical on every checkout.
+# They are the published text old integrations adapt against, so end-of-line
+# conversion must not touch them (`-text` disables all EOL normalisation).
+# Everything else keeps the repository default.
+docs/api/v1-260925/REFERENCE.md -text
